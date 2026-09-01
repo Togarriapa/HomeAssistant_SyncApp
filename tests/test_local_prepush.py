@@ -132,6 +132,21 @@ class LocalPrepushTests(unittest.TestCase):
         self.assertEqual(engine.repository.staged_paths(), [])
         self.assertEqual(git(self.repository_dir, "status", "--porcelain"), "")
 
+    def test_corrupt_manifest_blocks_local_mirror_commit_and_push(self) -> None:
+        (self.live / "configuration.yaml").write_text("homeassistant:\n  name: Test\n", encoding="utf-8")
+        self.settings.manifest_path.write_text('["../outside.yaml"]', encoding="utf-8")
+        supervisor = FakeSupervisor()
+        engine = self._engine()
+
+        with patch("syncapp.engine.SupervisorClient", return_value=supervisor):
+            engine.run_once()
+
+        self.assertEqual(supervisor.checks, 0)
+        self.assertIsNone(engine.repository.head())
+        self.assertIsNone(engine.repository.remote_head())
+        self.assertEqual(engine.repository.staged_paths(), [])
+        self.assertFalse((self.repository_dir / "configuration.yaml").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

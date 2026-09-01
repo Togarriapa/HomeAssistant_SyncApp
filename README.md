@@ -16,6 +16,8 @@ A fresh SyncApp instance connected to an already-populated configuration reposit
 
 Local changes are filtered before they are committed so secrets, databases, logs, caches, generated files, private-key material, and runtime state are not pushed accidentally. The same blocked-file policy is enforced for remote application and first-run bootstrap.
 
+The persisted managed-path manifest under `/data` is treated as safety-critical state, not a best-effort cache. If it is malformed, has the wrong JSON shape, or names a blocked/absolute/traversal path, synchronization fails closed before local mirroring. Managed paths are revalidated immediately before deletion so damaged state cannot turn the isolated repository cleanup path into a filesystem traversal.
+
 Remote live application is disabled by default: `dry_run` defaults to `true` and `remote_apply_enabled` defaults to `false`. Both first-sync authority flags also default to `false`.
 
 > [!WARNING]

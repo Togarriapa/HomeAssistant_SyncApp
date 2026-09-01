@@ -16,7 +16,7 @@ This checks Core info, the Supervisor Core API proxy, and Supervisor `/core/chec
 python3 /app/canary.py --filesystem
 ```
 
-This opens `/homeassistant` with `O_DIRECTORY|O_NOFOLLOW`, exercises descriptor-relative open/stat on the actual mount, and reads `configuration.yaml` through the same no-follow `LiveFilesystem` boundary used by transactions. It reports capability/proof booleans, not configuration contents or hashes.
+This opens `/homeassistant` with `O_DIRECTORY|O_NOFOLLOW`, exercises descriptor-relative open/stat on the actual mount, and reads `configuration.yaml` through the same no-follow `LiveFilesystem` boundary used by transactions. It reports capability/proof booleans, not configuration contents or hashes. The command fails if the selected probe path is missing, blocked, a symlink, or not a regular file; a successful result therefore proves that the production read path actually ran.
 
 A different policy-approved regular file can be selected explicitly:
 
@@ -34,9 +34,9 @@ Only on the disposable canary:
 python3 /app/canary.py --filesystem --filesystem-write-probe
 ```
 
-This does **not** edit a Home Assistant configuration file. It creates a random `.syncapp-canary-*.tmp` file directly under `/homeassistant`, fsyncs it, descriptor-relatively renames it to another random blocked `*.tmp` name, verifies the bytes through `O_NOFOLLOW`, unlinks it with `dir_fd`, and fsyncs the directory. `*.tmp` is already blocked by SyncApp's synchronization policy.
+This does **not** edit a Home Assistant configuration file. It creates two random `.syncapp-canary-*.tmp` files directly under `/homeassistant` using `O_EXCL|O_NOFOLLOW`, so both source and destination names are proven to belong to that canary invocation before replacement. It fsyncs the source, descriptor-relatively replaces the reserved destination with the source, verifies the bytes through `O_NOFOLLOW`, unlinks the destination with `dir_fd`, and fsyncs the directory. `*.tmp` is already blocked by SyncApp's synchronization policy.
 
-The probe attempts cleanup on every exit path. If cleanup itself fails, the command fails loudly and identifies the `.syncapp-canary-*.tmp` pattern for operator inspection. Do not enable remote apply until the reason is understood and any residual probe file is removed.
+The probe attempts cleanup on every exit path, including replacement failure. If cleanup itself fails, the command fails loudly and identifies the `.syncapp-canary-*.tmp` pattern for operator inspection. Do not enable remote apply until the reason is understood and any residual probe file is removed. A random-name collision also fails closed; the canary never intentionally replaces an unowned path.
 
 ## 4. Supervisor backup and restart probes
 

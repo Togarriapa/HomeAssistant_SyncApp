@@ -74,6 +74,14 @@ class CanaryTests(unittest.TestCase):
             self.assertTrue(result["probe_path_read_verified"])
             self.assertFalse(result["write_probe"])
 
+    def test_readonly_filesystem_probe_requires_existing_regular_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+
+            with self.assertRaisesRegex(RuntimeError, "not an existing policy-approved regular file"):
+                run_filesystem_canary(live)
+
     def test_explicit_filesystem_write_probe_replaces_unlinks_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as temporary:
             live = Path(temporary) / "live"
@@ -85,6 +93,8 @@ class CanaryTests(unittest.TestCase):
 
             self.assertEqual(sorted(path.name for path in live.iterdir()), before)
             self.assertTrue(result["write_probe"])
+            self.assertTrue(result["exclusive_source_reservation"])
+            self.assertTrue(result["exclusive_destination_reservation"])
             self.assertTrue(result["descriptor_relative_replace"])
             self.assertTrue(result["descriptor_relative_unlink"])
             self.assertTrue(result["file_fsync"])

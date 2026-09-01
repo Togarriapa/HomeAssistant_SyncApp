@@ -1,158 +1,132 @@
 # HomeAssistant SyncApp
 
+## Repository roles
+
+SyncApp deliberately uses two separate GitHub repositories:
+
+- **App source repository:** `Togarriapa/HomeAssistant_SyncApp`. This contains the Home Assistant app/add-on implementation, tests, CI, and documentation. The `url` field in `config.yaml` refers to this repository because Home Assistant uses it as the app project URL.
+- **Managed Home Assistant repository:** configured with `homeassistant_repository_url`. This is the only repository SyncApp clones into `/data/repository` and uses for bidirectional Home Assistant configuration synchronization.
+
+`homeassistant_repository_url` must be a GitHub HTTPS repository URL and must not point back to `Togarriapa/HomeAssistant_SyncApp`. The previous experimental option name `repository_url` remains accepted as a deprecated compatibility alias. If both values are present they must resolve to the same GitHub repository; otherwise SyncApp refuses to start rather than guessing which target is authoritative.
+
+Example:
+
+```yaml
+homeassistant_repository_url: https://github.com/example/my-home-assistant-config.git
+branch: main
+dry_run: true
+remote_apply_enabled: false
+```
+
+The GitHub token, when required, must grant the permissions needed on the **managed Home Assistant repository**, not on the SyncApp source repository.
+
 ## Current development milestone
 
 Version `0.2.0` implements the complete safety pipeline for an **experimental, explicitly enabled** remote apply:
 
-- read the Home Assistant configuration from `/homeassistant`;
-- exclude secrets, runtime state, databases, logs, caches, keys, certificates, and generated files;
-- mirror allowed files into an isolated Git worktree under `/data`;
-- commit and push local changes when `dry_run` is disabled;
-- fetch and classify remote Git state as equal, local-ahead, remote-ahead, remote-only, or diverged;
-- refuse pushes and applies when Git history is diverged;
-- enumerate a remote commit as untrusted Git tree data before materializing it;
-- reject blocked paths, symlinks/special Git modes, oversized files, and oversized trees;
-- materialize accepted remote files only into `/data/staging`;
-- syntax-check staged YAML/YML (including Home Assistant custom tags), JSON, and Python custom-component files;
-- preserve the previous staging snapshot if a new candidate fails validation;
-- refuse remote application if allowed live configuration has drifted from the local Git HEAD;
-- create both a local rollback snapshot/journal and a synchronous Supervisor partial backup before mutation;
-- bind every staged write to a SHA-256 digest in the transaction journal and re-verify it after backup and before atomic replacement;
-- mutate only files that genuinely differ, plus genuine deletions;
-- abort without overwriting a local edit if an affected live file changes while the Supervisor backup is running;
-- copy or delete only policy-approved regular files using atomic replacement for writes;
-- run the Supervisor Home Assistant configuration check after the recoverable file update and before restart;
-- restart Home Assistant only after semantic validation succeeds;
-- verify the Core API becomes healthy after restart through the Supervisor proxy;
-- restore the prior files and, when required, restart/verify the prior configuration after a failed apply;
-- recover interrupted transactions before performing any new Git synchronization;
-- fail closed when post-verification crash recovery cannot prove both the adopted Git baseline and matching live managed files;
-- re-fetch GitHub before adopting a successfully verified remote commit as the local baseline;
-- retain a bounded set of SyncApp-created pre-apply backups without touching protected or unrelated backups.
+**Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Roll back if necessary**
 
-There is still **no direct `git pull` into `/homeassistant`**. Git checkout/reset operations only affect the isolated repository under `/data/repository`.
+The app:
+
+- reads Home Assistant configuration from `/homeassistant`;
+- excludes secrets, runtime state, databases, logs, caches, keys, certificates, and generated files;
+- mirrors allowed files only into the isolated managed-repository worktree under `/data/repository`;
+- validates local candidates before committing them to the managed Home Assistant repository;
+- fetches and classifies managed-repository state as equal, local-ahead, remote-ahead, remote-only, or diverged;
+- refuses push/apply operations on diverged history;
+- treats fetched Git trees as untrusted input;
+- rejects blocked paths, symlinks/special modes, oversized content, and malformed YAML/JSON/Python;
+- stages accepted remote candidates under `/data/staging`, never directly in `/homeassistant`;
+- blocks remote apply when live allowed configuration has drifted from the local Git baseline;
+- creates a persistent local transaction snapshot and synchronous Supervisor partial backup before live mutation;
+- pins staged writes with SHA-256 across the backup window;
+- applies only policy-approved regular files and genuine deletions using atomic replacement;
+- runs Supervisor `/core/check` before restart;
+- verifies Home Assistant Core health after restart;
+- rolls back prior files/Core state when apply or verification fails;
+- recovers interrupted transactions before any new synchronization;
+- re-fetches the managed repository before final Git adoption so remote movement causes rollback;
+- retains a bounded set of SyncApp-created pre-apply backups without touching protected or unrelated backups.
+
+There is **no direct `git pull` into `/homeassistant`**. Git checkout/reset/clean operations are confined to `/data/repository`.
 
 ## Configuration
 
-- `repository_url`: target GitHub configuration repository. This is separate from the repository containing SyncApp itself.
-- `branch`: branch to synchronize, normally `main`.
-- `github_token`: GitHub token used for authenticated Git operations. It is passed to Git through process environment configuration rather than being embedded in the remote URL.
-- `poll_interval_seconds`: synchronization polling interval. Minimum 30 seconds.
-- `dry_run`: defaults to `true`. No local push or remote live apply is performed while enabled.
-- `remote_apply_enabled`: defaults to `false`. Remote live writes require this to be `true` **and** `dry_run` to be `false`.
-- `verify_timeout_seconds`: maximum time to wait for Home Assistant Core to become healthy after a restart; default 120 seconds.
-- `backup_retention_count`: defaults to `10`. After a successful remote transaction, SyncApp may delete older **unprotected backups whose names begin with `SyncApp pre-apply `**. `0` disables cleanup. Protected backups, unrelated/manual backups, backups with incomplete metadata, and the backup created for the just-completed transaction are never selected.
-- `git_user_name` / `git_user_email`: identity used for automatically generated commits.
+- `homeassistant_repository_url`: GitHub repository that stores the Home Assistant configuration and is read/written by SyncApp. It must be separate from the SyncApp source repository.
+- `repository_url`: deprecated compatibility alias for `homeassistant_repository_url`; do not use for new installations.
+- `branch`: branch within the managed Home Assistant repository, normally `main`.
+- `github_token`: token for the managed Home Assistant repository. Credentials are passed to Git through process environment configuration and are not embedded in the remote URL.
+- `poll_interval_seconds`: synchronization polling interval; minimum 30 seconds.
+- `dry_run`: defaults to `true`. No local push or remote live apply occurs while enabled.
+- `remote_apply_enabled`: defaults to `false`. Remote live writes require this to be `true` and `dry_run` to be `false`.
+- `verify_timeout_seconds`: Core-health timeout after restart; default 120 seconds.
+- `backup_retention_count`: defaults to `10`. `0` disables cleanup. Only old unprotected backups positively identified by the `SyncApp pre-apply ` prefix are candidates.
+- `git_user_name` / `git_user_email`: identity used for generated commits in the managed Home Assistant repository.
 
-## Safety model
+## Local → GitHub
 
-The remote-to-local workflow is:
+Local Home Assistant changes are mirrored into `/data/repository`, filtered through the same secret/runtime policy, and statically checked for size and syntax. SyncApp also runs Supervisor `/core/check` against the live configuration before creating a Git commit.
 
-**Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Roll back if necessary**
+If validation fails or `dry_run` is enabled, the rejected candidate is removed from the isolated Git index/worktree; `/homeassistant` remains untouched. SyncApp also refuses to create a new commit when the managed repository already tracks a blocked secret/runtime path.
+
+A failed push leaves the isolated branch local-ahead so a later cycle can retry the push without rebuilding or mutating the live configuration.
+
+## GitHub → Local safety model
 
 ### Detect / Fetch
 
-The app fetches into an isolated Git worktree. A diverged history is blocked. Before a remote update can touch live files, the allowed live Home Assistant configuration must still match the local Git HEAD. This deliberately conservative rule avoids silently overwriting local edits that have not yet been committed and pushed.
+SyncApp fetches only into `/data/repository`. A diverged history is blocked. Before a remote update can touch live files, allowed live configuration must match the current local Git baseline.
 
-### Stage / Validate
+### Stage / static Validate
 
-The fetched remote tree is treated as untrusted input. Blocked paths such as `secrets.yaml`, `.storage`, databases, logs, caches, private-key material, symlinks, unsupported Git modes, and excessive content are rejected before staging. YAML and JSON syntax plus Python custom-component syntax are checked in `/data/staging` without modifying live Home Assistant files.
+Remote tree entries are treated as untrusted. Blocked paths such as `secrets.yaml`, `.storage`, databases, logs, caches, private-key material, symlinks, unsupported Git modes, and excessive content are rejected before staging. YAML/JSON and Python custom-component syntax are checked under `/data/staging`.
 
-Static validation is not treated as proof that Home Assistant accepts the configuration semantically. The authoritative semantic check remains Supervisor `/core/check` against the recoverably updated live mount.
+Static validation is not treated as proof of Home Assistant semantic validity; Supervisor `/core/check` remains authoritative after recoverable application.
 
 ### Backup / Apply
 
-Before live mutation, SyncApp records a persistent transaction journal under `/data/transaction`, snapshots every existing affected managed file, and then requests a synchronous Supervisor partial backup of Home Assistant. The backup request is allowed up to 15 minutes because no live file mutation occurs until it succeeds.
+Before mutation SyncApp writes a durable transaction journal under `/data/transaction`, snapshots every existing affected managed file, and requests a synchronous Supervisor partial Home Assistant backup. No live file is modified until that backup succeeds.
 
-The transaction journal records a SHA-256 digest for every staged file in the write set. After the Supervisor backup completes, SyncApp proves both that every affected live target still matches the pre-backup snapshot and that every staged source still matches its recorded digest. The copied temporary file is hashed again immediately before atomic replacement. This closes the backup-window TOCTOU path for both live and staged content.
+Every staged write has a SHA-256 digest recorded in the journal. After backup, SyncApp proves both that affected live targets still match their pre-backup snapshot and that staged sources still match their recorded hashes. A copied temporary file is hashed again before atomic replacement.
 
-Only files that differ from the staged remote candidate are included in the write set; unchanged configuration files are not rewritten. If a local edit appeared during the backup window, SyncApp discards its transaction metadata and leaves that edit untouched.
+If local content changes during the backup window, the transaction is aborted without overwriting that edit.
 
-Only paths allowed by the same policy used for local-to-GitHub synchronization can be written or deleted. A symlinked live configuration root, symlink targets, and symlinked parent directories are refused. Writes use a temporary sibling file followed by atomic replacement.
+### Verify / adoption
 
-### Verify
+After recoverable application, SyncApp calls `/core/check`. A failed check restores prior files without restarting the still-running old Core process. A successful check is followed by Core restart and Core API health verification.
 
-After file application, SyncApp calls the Supervisor Core configuration check. If that fails, the prior files are restored without restarting the still-running old Core process.
-
-If the check succeeds, SyncApp requests a Core restart. The Supervisor restart API waits for its restart operation; SyncApp then verifies Home Assistant itself is reachable through the Supervisor `/core/api/` proxy. Only after that succeeds does it re-fetch the configured Git branch, verify the remote commit did not move, adopt exactly the verified commit in the isolated Git worktree, update the managed-file manifest, and remove the transaction snapshot.
-
-If the remote branch moved while backup/restart/verification was in progress, final Git adoption fails and the live configuration is rolled back rather than silently accepting a different commit.
+Only after health succeeds does SyncApp re-fetch the managed GitHub branch, prove the candidate commit is still the configured remote head, adopt that exact commit in `/data/repository`, update the managed-file manifest, and complete the transaction. If the branch moved, the live update is rolled back.
 
 ### Rollback / crash recovery
 
-If health verification fails after restart, the prior files are restored, checked, restarted, and health-verified. If rollback health itself cannot be proven, the transaction journal and snapshot are retained with a failure state rather than being discarded.
+If post-restart health fails, prior files are restored and the old configuration is checked, restarted, and health-verified. When rollback health cannot be proven, the transaction journal/snapshot is preserved rather than discarded.
 
-On every synchronization cycle, unresolved transaction state is handled before any new Git activity. States that are known to precede live mutation (`preparing`, `prepared`, or `backed_up`) are discarded without restarting Core. States that may have modified live files are rolled back and the prior Core configuration is validated/restarted/health-checked before synchronization can continue.
+Interrupted transaction state is always handled before new Git activity. Pre-mutation states can be discarded without restarting Core; states that may have changed live files are rolled back and verified first.
 
-A special crash window exists after a remote commit has already passed Core health verification and been adopted as the isolated Git baseline but before manifest/journal cleanup finishes. In that state SyncApp finalizes bookkeeping only if Git HEAD equals the verified commit **and** the live managed files still match that adopted baseline. If live drift is detected, the journal is marked `verified_drift` and both automatic finalization and rollback are blocked. If the Git baseline cannot be proven, recovery also stops without mutating live files. This avoids guessing in a state where either direction could destroy newer data.
+A special post-verification crash window is handled conservatively. When the verified commit was already adopted in Git, SyncApp finalizes bookkeeping only if both Git HEAD and the live managed configuration still match that commit. Ambiguous drift blocks both automatic finalize and rollback and preserves recovery evidence.
 
-An empty transaction directory left in the tiny interval before the first journal write can be cleaned automatically. A non-empty transaction directory without a journal is treated as ambiguous corruption and blocks new work rather than guessing.
+## Backup retention
 
-### Backup retention
-
-Successful remote applies create durable Supervisor partial backups as the last-resort recovery layer. To avoid unbounded storage growth, SyncApp can perform conservative post-success cleanup using `backup_retention_count`.
-
-Retention runs only **after** the transaction has been verified, adopted in Git, manifested, and completed. Cleanup failure is logged but does not convert a successful apply into a rollback. Deletion candidates must positively satisfy all of these conditions:
-
-- backup name begins with `SyncApp pre-apply `;
-- Supervisor reports `protected: false`;
-- slug is syntactically safe;
-- creation date is present and parseable;
-- the slug is not the backup created for the just-completed transaction.
-
-Protected backups, manual/unrelated backups, ambiguous metadata, and the current transaction backup fail closed and are preserved.
+Retention runs only after a remote transaction has been verified, adopted, manifested, and completed. Cleanup failure is non-fatal. A backup is eligible only when its name begins with `SyncApp pre-apply `, Supervisor reports `protected: false`, the slug and timestamp are valid, and it is not the just-created transaction backup. All ambiguous, protected, manual, and unrelated backups are preserved.
 
 ## Supervisor canary
 
-The app image includes `/app/canary.py` for exercising the real Supervisor integration **without changing any Home Assistant configuration file**.
-
-The default command is non-mutating with respect to configuration and performs Core info, Core API health, and `/core/check` calls:
+The image includes `/app/canary.py` to exercise Supervisor integration without changing Home Assistant configuration files.
 
 ```sh
 python3 /app/canary.py
-```
-
-To additionally prove synchronous partial-backup creation:
-
-```sh
 python3 /app/canary.py --backup
-```
-
-The restart probe is intentionally separate and explicit because it restarts Home Assistant Core:
-
-```sh
 python3 /app/canary.py --backup --restart --timeout 120
 ```
 
-A disposable/canary Home Assistant OS installation should pass all three levels before `remote_apply_enabled` is enabled anywhere important. The canary does not modify `/homeassistant`; the full remote-apply path should then be tested with a harmless, reversible configuration-only commit on that disposable instance.
+The restart form explicitly restarts Core. A disposable/canary HAOS installation should pass these probes before `remote_apply_enabled` is used anywhere important, followed by a harmless reversible configuration-only remote-apply test.
 
 ## Test coverage
 
-Repository CI now covers:
-
-- policy and secret/runtime exclusion;
-- Git relationship states including divergence and empty repositories;
-- untrusted staging, malformed YAML/JSON/Python, Home Assistant custom tags, and Git symlink rejection;
-- staged-content SHA-256 pinning and mutation during the Supervisor backup window;
-- live-vs-HEAD drift detection;
-- minimal apply-plan deletion/write behavior;
-- Supervisor endpoint request/response contracts, including backup inventory and scoped deletion;
-- conservative backup-retention selection and protected/unrelated-backup preservation;
-- Supervisor canary escalation behavior;
-- backup failure before mutation;
-- local edits occurring during the backup window;
-- semantic-check failure before restart;
-- post-restart health failure with verified rollback;
-- rollback-health failure with recovery journal preservation;
-- interrupted transaction recovery, verified/adopted recovery ambiguity, and preparation-state recovery;
-- symlinked live paths/root rejection;
-- an end-to-end local Git remote update with successful baseline adoption;
-- a remote branch move during finalization causing rollback;
-- static type checking of the complete app source;
-- a real Docker image build using the version declared in app metadata.
+CI covers secret/runtime policy, Git relationship states and empty repositories, remote staging validation, malformed YAML/JSON/Python, Git symlink rejection, staged SHA-256 integrity, live drift, minimal apply plans, Supervisor request contracts, conservative backup retention, backup-window race injection, semantic-check failure, post-restart rollback, rollback-health failure, interrupted/ambiguous crash recovery, local pre-push validation, first push to an empty Git repository, static type checking, metadata validation, and Docker image build.
 
 ## Experimental status
 
-The repository-level safety model is implemented and heavily failure-injected, but automated local tests cannot prove real Supervisor backup duration/semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, Core restart/health transitions, or backup inventory/deletion behavior on Home Assistant OS hardware.
+Repository-level safety is heavily failure-injected, but local CI cannot prove real Supervisor backup semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, Core restart/health transitions, or backup inventory/deletion on Home Assistant OS hardware.
 
-Keep `remote_apply_enabled: false` on any important instance until version `0.2.0` has passed the next milestone on a disposable/canary Home Assistant OS installation. That real-runtime canary is now the primary blocker to considering automatic remote apply production-ready.
+Keep `remote_apply_enabled: false` on important instances until the current stack passes a disposable HAOS/Supervisor canary.

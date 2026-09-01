@@ -58,6 +58,11 @@ class SupervisorClientTests(unittest.TestCase):
         self.assertEqual(result, {"message": "API running."})
         self.assertEqual(client.calls[0], ("GET", "/core/api/", None, 7))
 
+    def test_core_health_rejects_unexpected_success_payload(self) -> None:
+        client = RecordingSupervisorClient([{"message": "starting"}])
+        with self.assertRaisesRegex(SupervisorError, "unexpected health response"):
+            client.core_api_health()
+
     def test_restart_uses_core_restart_endpoint(self) -> None:
         client = RecordingSupervisorClient([{"result": "ok", "data": {}}])
         client.restart_core()

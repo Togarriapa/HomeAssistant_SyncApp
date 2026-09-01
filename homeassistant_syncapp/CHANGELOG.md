@@ -10,6 +10,7 @@
 - Persist managed-path manifest updates durably using `fsync` on the temporary file, atomic replacement, and parent-directory `fsync`; surface durability failures so post-verification transaction evidence can be preserved and retried instead of treating bookkeeping as complete.
 - Use descriptor-relative, no-follow filesystem operations for live transaction snapshotting, hashing, replacement, and deletion so a parent-path symlink swap cannot redirect the final `/homeassistant` mutation outside the directory tree that was actually opened.
 - Add a staged HAOS filesystem canary: read-only `O_NOFOLLOW`/`dir_fd` validation by default, plus an explicit disposable-instance blocked-`*.tmp` create/fsync/replace/readback/unlink/directory-fsync probe with exclusive source/destination reservation and fail-closed cleanup.
+- Record a redacted HAOS/Core/Supervisor runtime fingerprint in canary output and make stale `.syncapp-canary-*.tmp` evidence block the explicit write probe; successful probes prove zero matching leftovers before and after mutation.
 - Create live transaction temporary files with `O_EXCL|O_NOFOLLOW`, atomically replace them relative to an opened parent descriptor, fsync that descriptor after mutation, and clean temporary files when pre-replace verification fails.
 - Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
 - Write new transaction journals as version 2 with a canonical SHA-256 integrity checksum and validate all recovery-critical fields before interpreting transaction state.
@@ -34,7 +35,7 @@
 - Refuse local commits when the existing Git index tracks any blocked secret/runtime path.
 - Discard rejected and dry-run local candidates from the isolated Git worktree so staged state cannot leak into later cycles.
 - Fail closed on first synchronization when the configured remote branch is already populated instead of silently choosing local or remote authority.
-- Add `initial_local_publish_enabled: false`; it must be explicitly enabled before a fresh instance may publish validated live configuration over an already-populated equal remote baseline.
+- Add `initial_local_publish_enabled: false`; it must be explicitly enabled before a fresh instance may publish validated live Home Assistant configuration over an already-populated equal remote baseline.
 - Add `initial_remote_apply_enabled: false` as a mutually exclusive remote-authoritative first-sync option.
 - Require an exact equal isolated/fetched Git relationship before remote-authoritative bootstrap; non-equal populated first-sync states remain blocked.
 - Route remote-authoritative bootstrap through the same Stage → Validate → Backup → Apply → Verify → Rollback transaction machinery as normal remote updates rather than bypassing drift protection globally.

@@ -31,7 +31,6 @@ _ALLOWED_STATES = {
     "verified_drift",
 }
 _STATES_REQUIRING_COMPLETE_SNAPSHOT = _ALLOWED_STATES - {"preparing"}
-_STATES_REQUIRING_BACKUP = _ALLOWED_STATES - {"preparing", "prepared"}
 
 
 class JournalIntegrityError(ValueError):
@@ -165,10 +164,6 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
     if backup is not None:
         if not isinstance(backup, str) or not _BACKUP_SLUG_RE.fullmatch(backup):
             raise JournalIntegrityError("transaction journal contains an invalid Supervisor backup slug")
-    if state in _STATES_REQUIRING_BACKUP and not backup:
-        raise JournalIntegrityError(
-            f"transaction journal state {state} requires recorded Supervisor backup evidence"
-        )
     if state in {"preparing", "prepared"} and backup is not None:
         raise JournalIntegrityError(
             f"transaction journal state {state} must not claim a Supervisor backup"

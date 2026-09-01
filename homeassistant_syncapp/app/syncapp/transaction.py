@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,10 +27,15 @@ class ApplyPlan:
     commit: str
     write_paths: tuple[str, ...]
     delete_paths: tuple[str, ...]
+    write_sha256: tuple[tuple[str, str], ...] = ()
 
     @property
     def affected_paths(self) -> tuple[str, ...]:
         return tuple(sorted(set(self.write_paths) | set(self.delete_paths)))
+
+    @property
+    def write_hashes(self) -> dict[str, str]:
+        return dict(self.write_sha256)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,14 @@ class TransactionResult:
     commit: str
     backup_slug: str
     affected_paths: tuple[str, ...]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _fsync_file(path: Path) -> None:
@@ -56,6 +70,22 @@ def _durable_replace(temporary: Path, target: Path) -> None:
     _fsync_file(temporary)
     os.replace(temporary, target)
     _fsync_directory(target.parent)
+
+
+def _pin_staged_content(staging_dir: Path, plan: ApplyPlan) -> ApplyPlan:
+    """Bind every planned write to the exact staged bytes prepared for this transaction."""
+    hashes: list[tuple[str, str]] = []
+    for relative in plan.write_paths:
+        source = staging_dir / relative
+        if source.is_symlink() or not source.is_file():
+            raise TransactionError(f"staged source disappeared or changed type: {relative}")
+        hashes.append((relative, _sha256_file(source)))
+    return ApplyPlan(
+        commit=plan.commit,
+        write_paths=plan.write_paths,
+        delete_paths=plan.delete_paths,
+        write_sha256=tuple(hashes),
+    )
 
 
 def build_apply_plan(
@@ -81,10 +111,13 @@ def build_apply_plan(
         if not live.exists() or live.read_bytes() != staged.read_bytes():
             write_paths.append(relative)
 
-    return ApplyPlan(
-        commit=commit,
-        write_paths=tuple(write_paths),
-        delete_paths=tuple(sorted(baseline - desired)),
+    return _pin_staged_content(
+        staging_dir,
+        ApplyPlan(
+            commit=commit,
+            write_paths=tuple(write_paths),
+            delete_paths=tuple(sorted(baseline - desired)),
+        ),
     )
 
 
@@ -136,6 +169,7 @@ class FileTransaction:
         if root.exists():
             raise TransactionError("an unresolved transaction already exists")
 
+        plan = _pin_staged_content(staging_dir, plan)
         existed: set[str] = set()
         for relative in plan.affected_paths:
             target = _assert_safe_live_path(source_dir, relative)
@@ -187,10 +221,14 @@ class FileTransaction:
             data = json.loads(journal.read_text(encoding="utf-8"))
             if data.get("version") != 1:
                 raise TransactionError("unsupported transaction journal version")
+            raw_hashes = data.get("write_sha256", {})
+            if not isinstance(raw_hashes, dict):
+                raise TransactionError("invalid staged-content hash map in transaction journal")
             plan = ApplyPlan(
                 commit=str(data["commit"]),
                 write_paths=tuple(str(x) for x in data["write_paths"]),
                 delete_paths=tuple(str(x) for x in data["delete_paths"]),
+                write_sha256=tuple(sorted((str(k), str(v)) for k, v in raw_hashes.items())),
             )
             tx = cls(root, source_dir, staging_dir, plan)
             tx.existed = {str(x) for x in data.get("existed", [])}
@@ -214,12 +252,13 @@ class FileTransaction:
             "commit": self.plan.commit,
             "write_paths": list(self.plan.write_paths),
             "delete_paths": list(self.plan.delete_paths),
+            "write_sha256": self.plan.write_hashes,
             "existed": sorted(self.existed),
             "supervisor_backup": self.supervisor_backup,
         }
         temporary = self.journal_path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, self.journal_path)
@@ -249,9 +288,24 @@ class FileTransaction:
                     f"live configuration created during transaction preparation: {relative}"
                 )
 
+    def assert_staging_unchanged(self) -> None:
+        """Prove every pending write still contains the exact validated bytes."""
+        expected = self.plan.write_hashes
+        if set(expected) != set(self.plan.write_paths):
+            raise TransactionError("transaction journal is missing staged-content hashes")
+        for relative in self.plan.write_paths:
+            source = self.staging_dir / relative
+            if source.is_symlink() or not source.is_file():
+                raise TransactionError(f"staged source disappeared or changed type: {relative}")
+            if _sha256_file(source) != expected[relative]:
+                raise TransactionError(
+                    f"staged configuration changed during transaction preparation: {relative}"
+                )
+
     def apply(self) -> None:
         if self.state not in {"backed_up", "prepared"}:
             raise TransactionError(f"transaction cannot apply from state {self.state}")
+        self.assert_staging_unchanged()
         self._write_journal("applying")
         for relative in self.plan.write_paths:
             target = _assert_safe_live_path(self.source_dir, relative)
@@ -262,6 +316,8 @@ class FileTransaction:
             temporary = target.with_name(target.name + ".syncapp-new")
             try:
                 shutil.copy2(source, temporary)
+                if _sha256_file(temporary) != self.plan.write_hashes[relative]:
+                    raise TransactionError(f"staged content changed while copying: {relative}")
                 _durable_replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
@@ -358,10 +414,11 @@ def execute_verified_transaction(
 
     try:
         transaction.assert_live_unchanged()
+        transaction.assert_staging_unchanged()
     except Exception as exc:
         transaction.discard()
         raise TransactionError(
-            f"live configuration changed while backup was running; remote apply aborted without mutation: {exc}"
+            f"live or staged configuration changed while backup was running; remote apply aborted without mutation: {exc}"
         ) from exc
 
     restart_requested = False

@@ -27,9 +27,22 @@ A returned backup slug is not sufficient evidence. Before the transaction journa
 
 If any proof is missing or inconsistent, the transaction is discarded while still in the pre-mutation phase. Live Home Assistant configuration is left untouched, `/core/check` is not invoked for the candidate, and Core is not restarted.
 
+## Continuity across the mutation boundary
+
+Initial verification is not treated as a permanent lease on the backup. After the potentially long backup window has closed and live/staged drift checks pass, SyncApp re-runs the complete Supervisor backup proof immediately before `FileTransaction.apply()`.
+
+The same backup is then proved a third time immediately after descriptor-relative file application and before the candidate `/core/check` or Core restart.
+
+These gates intentionally produce different failure behavior:
+
+- if the pre-mutation continuity proof fails, transaction state is discarded and `/homeassistant` remains untouched;
+- if the post-apply continuity proof fails, SyncApp restores the local rollback snapshot immediately while the old Core process is still running, then aborts without candidate `/core/check` or restart.
+
+This does not make an external Supervisor backup impossible to remove concurrently. It narrows the unobserved interval around the first live mutation and refuses to proceed when the last-resort backup layer cannot still be proved at either side of that boundary. The independently pinned local rollback snapshot remains the primary automatic rollback mechanism.
+
 ## Journal boundary
 
-`FileTransaction.apply()` accepts only a transaction in the `backed_up` state. The production transaction runner now records that state only after the Supervisor backup proof above succeeds.
+`FileTransaction.apply()` accepts only a transaction in the `backed_up` state. The production transaction runner records that state only after the initial Supervisor backup proof succeeds, and it still requires the continuity proof immediately before invoking `apply()`.
 
 This keeps crash recovery conservative: a journal cannot claim the safety boundary was crossed merely because a backup-create endpoint returned an identifier.
 

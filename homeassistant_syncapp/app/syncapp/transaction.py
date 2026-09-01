@@ -398,15 +398,21 @@ def execute_verified_transaction(
     try:
         transaction.assert_live_unchanged()
         transaction.assert_staging_unchanged()
+        supervisor.verify_homeassistant_backup(slug, backup_name)
     except Exception as exc:
         transaction.discard()
         raise TransactionError(
-            f"live or staged configuration changed while backup was running; remote apply aborted without mutation: {exc}"
+            "live/staged configuration or Supervisor backup changed before live mutation; "
+            f"remote apply aborted without mutation: {exc}"
         ) from exc
 
     restart_requested = False
     try:
         transaction.apply()
+        # Keep the verified backup continuously present across the first live mutation.
+        # If it disappears or no longer proves the requested HA payload, roll the local
+        # snapshot back while the old Core process is still running.
+        supervisor.verify_homeassistant_backup(slug, backup_name)
         supervisor.check_core_configuration()
         transaction.mark("configuration_valid")
         restart_requested = True

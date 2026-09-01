@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+_GITHUB_HOSTS = {"github.com", "www.github.com"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,8 +34,12 @@ class Settings:
 
         repository_url = str(raw.get("repository_url") or "").strip()
         parsed = urlparse(repository_url)
-        if parsed.scheme != "https" or not parsed.netloc:
+        if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("repository_url must be an HTTPS Git repository URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("repository_url must not contain embedded credentials")
+        if parsed.hostname.lower() not in _GITHUB_HOSTS:
+            raise ValueError("repository_url must point to github.com")
 
         branch = str(raw.get("branch", "main")).strip()
         if not branch or not _BRANCH_RE.fullmatch(branch) or ".." in branch:

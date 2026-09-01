@@ -68,16 +68,18 @@ def apply_staged_remote(
         }
 
     desired_paths = collect_allowed_files(settings.staging_dir)
-    plan = build_apply_plan(settings.staging_dir, baseline_paths, staged.commit)
+    plan = build_apply_plan(
+        settings.staging_dir,
+        baseline_paths,
+        staged.commit,
+        live_dir=settings.source_dir,
+    )
     if not plan.affected_paths:
         repository.fetch()
         repository.adopt_remote(staged.commit)
         save_manifest(settings.manifest_path, desired_paths)
         return ()
 
-    # Verify Supervisor access before creating a journal/snapshot. If Supervisor
-    # is unavailable, no transaction directory is left behind and no live file
-    # has been touched.
     supervisor = SupervisorClient()
     transaction = FileTransaction.prepare(
         settings.transaction_dir,
@@ -92,8 +94,6 @@ def apply_staged_remote(
             supervisor,
             health_timeout_seconds=settings.verify_timeout_seconds,
         )
-        # The backup + restart window can be long. Re-fetch before adopting the
-        # baseline so a remote branch move cannot be mistaken for the verified commit.
         repository.fetch()
         repository.adopt_remote(result.commit)
         save_manifest(settings.manifest_path, desired_paths)

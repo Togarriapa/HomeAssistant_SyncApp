@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -9,6 +10,14 @@ from .policy import collect_allowed_files, is_allowed_relative
 
 class ManifestError(RuntimeError):
     """Raised when persisted managed-path state cannot be trusted safely."""
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def load_manifest(path: Path) -> set[str]:
@@ -47,8 +56,21 @@ def save_manifest(path: Path, files: set[str]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(sorted(files), indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(sorted(files), indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ManifestError(
+            f"managed-path manifest could not be persisted durably: {exc}"
+        ) from exc
 
 
 def mirror_local_configuration(

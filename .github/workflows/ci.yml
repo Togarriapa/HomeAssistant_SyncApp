@@ -57,8 +57,10 @@ jobs:
 
       - name: Build app image
         run: |
+          BUILD_VERSION="$(awk -F'"' '/^version:/{print $2; exit}' homeassistant_syncapp/config.yaml)"
+          test -n "$BUILD_VERSION"
           docker build \
-            --build-arg BUILD_VERSION=0.1.0 \
+            --build-arg BUILD_VERSION="$BUILD_VERSION" \
             --build-arg BUILD_ARCH=amd64 \
             --tag homeassistant-syncapp:test \
             homeassistant_syncapp

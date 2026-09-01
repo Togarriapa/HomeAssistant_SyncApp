@@ -17,7 +17,7 @@ map:
     read_only: false
     path: /homeassistant
 options:
-  repository_url: null
+  homeassistant_repository_url: null
   branch: main
   poll_interval_seconds: 60
   dry_run: true
@@ -27,7 +27,8 @@ options:
   git_user_name: HomeAssistant SyncApp
   git_user_email: homeassistant-syncapp@example.invalid
 schema:
-  repository_url: url
+  homeassistant_repository_url: url?
+  repository_url: url?
   branch: str
   github_token: password?
   poll_interval_seconds: int(30,86400)

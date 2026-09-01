@@ -5,13 +5,21 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Iterable
+import time
+from typing import Iterable, Protocol
 
 from .policy import collect_allowed_files, is_allowed_relative
 
 
 class TransactionError(RuntimeError):
     pass
+
+
+class SupervisorOperations(Protocol):
+    def create_homeassistant_backup(self, name: str) -> dict: ...
+    def check_core_configuration(self) -> dict: ...
+    def restart_core(self) -> dict: ...
+    def core_api_root(self) -> dict: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +31,13 @@ class ApplyPlan:
     @property
     def affected_paths(self) -> tuple[str, ...]:
         return tuple(sorted(set(self.write_paths) | set(self.delete_paths)))
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionResult:
+    commit: str
+    backup_slug: str
+    affected_paths: tuple[str, ...]
 
 
 def build_apply_plan(staging_dir: Path, baseline_paths: Iterable[str], commit: str) -> ApplyPlan:
@@ -97,7 +112,9 @@ class FileTransaction:
         return tx
 
     @classmethod
-    def load_active(cls, root: Path, source_dir: Path, staging_dir: Path) -> "FileTransaction | None":
+    def load_active(
+        cls, root: Path, source_dir: Path, staging_dir: Path
+    ) -> "FileTransaction | None":
         journal = root / cls.JOURNAL
         if not journal.exists():
             return None
@@ -135,6 +152,9 @@ class FileTransaction:
     def record_supervisor_backup(self, identifier: str) -> None:
         self.supervisor_backup = identifier
         self._write_journal("backed_up")
+
+    def mark(self, state: str) -> None:
+        self._write_journal(state)
 
     def apply(self) -> None:
         self._write_journal("applying")
@@ -185,3 +205,97 @@ class FileTransaction:
     def complete(self) -> None:
         self._write_journal("completed")
         shutil.rmtree(self.root)
+
+
+def _response_data(response: dict) -> dict:
+    data = response.get("data")
+    return data if isinstance(data, dict) else response
+
+
+def _backup_slug(response: dict) -> str:
+    slug = _response_data(response).get("slug")
+    if not slug:
+        raise TransactionError("Supervisor backup completed without returning a slug")
+    return str(slug)
+
+
+def wait_for_core_health(
+    supervisor: SupervisorOperations,
+    *,
+    timeout_seconds: int = 120,
+    poll_seconds: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            data = _response_data(supervisor.core_api_root())
+            if data.get("message") == "API running.":
+                return
+        except Exception as exc:  # Supervisor/Core can be transiently unavailable on restart.
+            last_error = exc
+        time.sleep(poll_seconds)
+    suffix = f": {last_error}" if last_error else ""
+    raise TransactionError(f"Home Assistant API did not become healthy{suffix}")
+
+
+def recover_active_transaction(
+    transaction: FileTransaction,
+    supervisor: SupervisorOperations,
+    *,
+    health_timeout_seconds: int = 120,
+) -> None:
+    """Fail closed after an interrupted run: restore the snapshot and verify Core."""
+    transaction.rollback()
+    supervisor.check_core_configuration()
+    supervisor.restart_core()
+    wait_for_core_health(supervisor, timeout_seconds=health_timeout_seconds)
+
+
+def execute_verified_transaction(
+    transaction: FileTransaction,
+    supervisor: SupervisorOperations,
+    *,
+    health_timeout_seconds: int = 120,
+) -> TransactionResult:
+    """Backup → Apply → config check → restart → health verify, with rollback."""
+    if not transaction.plan.affected_paths:
+        transaction.complete()
+        raise TransactionError("refusing empty remote apply transaction")
+
+    try:
+        backup = supervisor.create_homeassistant_backup(
+            f"SyncApp pre-apply {transaction.plan.commit[:12]}"
+        )
+        slug = _backup_slug(backup)
+        transaction.record_supervisor_backup(slug)
+    except Exception:
+        transaction.rollback()
+        raise
+
+    try:
+        transaction.apply()
+        supervisor.check_core_configuration()
+        transaction.mark("configuration_valid")
+        supervisor.restart_core()
+        transaction.mark("restarting")
+        wait_for_core_health(supervisor, timeout_seconds=health_timeout_seconds)
+        transaction.mark("verified")
+    except Exception as apply_error:
+        transaction.rollback()
+        try:
+            supervisor.check_core_configuration()
+            supervisor.restart_core()
+            wait_for_core_health(supervisor, timeout_seconds=health_timeout_seconds)
+        except Exception as rollback_error:
+            raise TransactionError(
+                f"apply failed ({apply_error}); files were restored but rollback health verification failed ({rollback_error})"
+            ) from rollback_error
+        raise TransactionError(f"remote apply failed and was rolled back: {apply_error}") from apply_error
+
+    result = TransactionResult(
+        commit=transaction.plan.commit,
+        backup_slug=slug,
+        affected_paths=transaction.plan.affected_paths,
+    )
+    return result

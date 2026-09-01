@@ -39,6 +39,25 @@ class TransactionResult:
     affected_paths: tuple[str, ...]
 
 
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _durable_replace(temporary: Path, target: Path) -> None:
+    _fsync_file(temporary)
+    os.replace(temporary, target)
+    _fsync_directory(target.parent)
+
+
 def build_apply_plan(
     staging_dir: Path,
     baseline_paths: Iterable[str],
@@ -126,16 +145,20 @@ class FileTransaction:
                 existed.add(relative)
 
         root.mkdir(parents=True, exist_ok=False)
+        _fsync_directory(root.parent)
         tx = cls(root, source_dir, staging_dir, plan)
         tx.existed = existed
         try:
             tx._write_journal("preparing")
             tx.snapshot_dir.mkdir()
+            _fsync_directory(tx.root)
             for relative in sorted(existed):
                 target = _assert_safe_live_path(source_dir, relative)
                 backup = tx.snapshot_dir / relative
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, backup)
+                _fsync_file(backup)
+                _fsync_directory(backup.parent)
             tx._write_journal("prepared")
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
@@ -153,6 +176,7 @@ class FileTransaction:
             try:
                 if not any(root.iterdir()):
                     root.rmdir()
+                    _fsync_directory(root.parent)
                     return None
             except OSError as exc:
                 raise TransactionError(f"cannot inspect orphan transaction directory: {exc}") from exc
@@ -194,8 +218,12 @@ class FileTransaction:
             "supervisor_backup": self.supervisor_backup,
         }
         temporary = self.journal_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, self.journal_path)
+        _fsync_directory(self.root)
 
     def record_supervisor_backup(self, identifier: str) -> None:
         self.supervisor_backup = identifier
@@ -234,7 +262,7 @@ class FileTransaction:
             temporary = target.with_name(target.name + ".syncapp-new")
             try:
                 shutil.copy2(source, temporary)
-                os.replace(temporary, target)
+                _durable_replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
 
@@ -244,6 +272,7 @@ class FileTransaction:
                 if not target.is_file():
                     raise TransactionError(f"refusing to delete non-file: {relative}")
                 target.unlink()
+                _fsync_directory(target.parent)
         self._write_journal("applied")
 
     def rollback(self, *, cleanup: bool = True) -> None:
@@ -260,13 +289,14 @@ class FileTransaction:
                     temporary = target.with_name(target.name + ".syncapp-rollback")
                     try:
                         shutil.copy2(backup, temporary)
-                        os.replace(temporary, target)
+                        _durable_replace(temporary, target)
                     finally:
                         temporary.unlink(missing_ok=True)
                 elif target.exists():
                     if not target.is_file():
                         raise TransactionError(f"rollback target is not a file: {relative}")
                     target.unlink()
+                    _fsync_directory(target.parent)
             except Exception as exc:
                 failures.append(f"{relative}: {exc}")
         if failures:
@@ -277,7 +307,9 @@ class FileTransaction:
             self.discard()
 
     def discard(self) -> None:
+        parent = self.root.parent
         shutil.rmtree(self.root, ignore_errors=False)
+        _fsync_directory(parent)
 
     def complete(self) -> None:
         self._write_journal("completed")
@@ -327,8 +359,6 @@ def execute_verified_transaction(
     try:
         transaction.assert_live_unchanged()
     except Exception as exc:
-        # No SyncApp live mutation has happened yet. Preserve any concurrent local
-        # edit and discard only our snapshot/journal.
         transaction.discard()
         raise TransactionError(
             f"live configuration changed while backup was running; remote apply aborted without mutation: {exc}"

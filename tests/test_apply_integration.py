@@ -179,6 +179,31 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertFalse(self.transaction.exists())
         self.assertEqual(supervisor.restarts, 1)
 
+    def test_completed_journal_cleanup_failure_finalizes_without_rollback(self) -> None:
+        remote = self._push_remote_candidate()
+        staged = stage_remote_configuration(self.repository, self.staging)
+        supervisor = FakeSupervisor()
+
+        with patch("syncapp.apply.SupervisorClient", return_value=supervisor), patch(
+            "syncapp.transaction.FileTransaction.discard", side_effect=OSError("cleanup interrupted")
+        ):
+            with self.assertRaisesRegex(TransactionError, "post-verification bookkeeping failed"):
+                apply_staged_remote(self.repository, self.settings, staged)
+
+        self.assertEqual(self.repository.head(), remote)
+        self.assertEqual((self.live / "configuration.yaml").read_text(), "version: new\n")
+        self.assertTrue(self.manifest.exists())
+        self.assertTrue(self.transaction.exists())
+        self.assertEqual(supervisor.restarts, 1)
+        self.assertEqual(supervisor.health_checks, 1)
+
+        self.assertTrue(recover_interrupted_apply(self.settings, self.repository))
+
+        self.assertEqual(self.repository.head(), remote)
+        self.assertEqual((self.live / "configuration.yaml").read_text(), "version: new\n")
+        self.assertFalse(self.transaction.exists())
+        self.assertEqual(supervisor.restarts, 1)
+
     def test_initial_remote_bootstrap_replaces_only_policy_allowed_live_baseline(self) -> None:
         remote = self.repository.remote_head()
         assert remote is not None

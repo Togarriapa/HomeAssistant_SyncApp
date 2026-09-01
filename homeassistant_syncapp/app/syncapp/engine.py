@@ -29,7 +29,7 @@ class SyncEngine:
     def run_once(self) -> None:
         # A crash during a previous apply is resolved before any new Git activity.
         # Do not immediately retry the same remote commit in the recovery cycle.
-        if recover_interrupted_apply(self.settings):
+        if recover_interrupted_apply(self.settings, self.repository):
             return
 
         self.repository.ensure()

@@ -21,7 +21,15 @@ from .transaction import (
 LOGGER = logging.getLogger(__name__)
 
 
-def recover_interrupted_apply(settings: Settings) -> bool:
+def _managed_paths_at_commit(repository: GitRepository, commit: str) -> set[str]:
+    return {
+        entry.path
+        for entry in repository.tree_entries(commit)
+        if entry.object_type == "blob" and is_allowed_relative(entry.path)
+    }
+
+
+def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> bool:
     active = FileTransaction.load_active(
         settings.transaction_dir,
         settings.source_dir,
@@ -29,6 +37,30 @@ def recover_interrupted_apply(settings: Settings) -> bool:
     )
     if active is None:
         return False
+
+    # A crash can happen after Core was verified and adopt_remote() advanced the
+    # isolated Git HEAD, but before the manifest/journal cleanup finished. In that
+    # state rolling live files back would make live configuration disagree with
+    # the already-adopted Git baseline. If HEAD proves the exact verified commit
+    # was adopted, finish the bookkeeping instead of reverting a successful apply.
+    if active.state == "verified":
+        try:
+            if repository.head() == active.plan.commit:
+                save_manifest(
+                    settings.manifest_path,
+                    _managed_paths_at_commit(repository, active.plan.commit),
+                )
+                active.complete()
+                LOGGER.warning(
+                    "Finalized previously verified remote commit %s after interrupted post-verification bookkeeping",
+                    active.plan.commit,
+                )
+                return True
+        except Exception:
+            LOGGER.exception(
+                "Could not prove that verified transaction %s was already adopted; falling back to rollback",
+                active.plan.commit,
+            )
 
     LOGGER.error(
         "Found interrupted remote-apply transaction for %s in state %s; rolling back before sync",
@@ -61,11 +93,7 @@ def apply_staged_remote(
     head = repository.head()
     baseline_paths: set[str] = set()
     if head is not None:
-        baseline_paths = {
-            entry.path
-            for entry in repository.tree_entries(head)
-            if entry.object_type == "blob" and is_allowed_relative(entry.path)
-        }
+        baseline_paths = _managed_paths_at_commit(repository, head)
 
     desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(

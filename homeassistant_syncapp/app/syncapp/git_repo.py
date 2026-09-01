@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from urllib.parse import urlparse
 
 
 LOGGER = logging.getLogger(__name__)
+_GITHUB_HOSTS = {"github.com", "www.github.com"}
 
 
 class GitError(RuntimeError):
@@ -45,6 +47,9 @@ class GitRepository:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         if self.token:
+            parsed = urlparse(self.remote_url)
+            if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
+                raise GitError("refusing to send GitHub token to a non-GitHub HTTPS remote")
             credential = base64.b64encode(
                 f"x-access-token:{self.token}".encode("utf-8")
             ).decode("ascii")

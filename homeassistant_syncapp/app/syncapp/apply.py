@@ -75,13 +75,16 @@ def apply_staged_remote(
         save_manifest(settings.manifest_path, desired_paths)
         return ()
 
+    # Verify Supervisor access before creating a journal/snapshot. If Supervisor
+    # is unavailable, no transaction directory is left behind and no live file
+    # has been touched.
+    supervisor = SupervisorClient()
     transaction = FileTransaction.prepare(
         settings.transaction_dir,
         settings.source_dir,
         settings.staging_dir,
         plan,
     )
-    supervisor = SupervisorClient()
 
     try:
         result = execute_verified_transaction(

@@ -115,6 +115,25 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
 
+    def test_apply_refuses_prepared_state_without_recorded_supervisor_backup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            tx = FileTransaction.prepare(
+                tx_root,
+                live,
+                staging,
+                ApplyPlan("a" * 40, ("configuration.yaml",), ()),
+            )
+            with self.assertRaisesRegex(TransactionError, "Supervisor backup is required"):
+                tx.apply()
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertEqual(tx.state, "prepared")
+
     def test_failed_configuration_check_restores_without_restarting_running_core(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -164,7 +183,7 @@ class TransactionTests(unittest.TestCase):
             (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
             (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
 
-            plan = ApplyPlan("g" * 40, ("configuration.yaml",), ())
+            plan = ApplyPlan("a" * 40, ("configuration.yaml",), ())
             tx = FileTransaction.prepare(tx_root, live, staging, plan)
             supervisor = FakeSupervisor(fail_health_always=True)
 
@@ -188,6 +207,7 @@ class TransactionTests(unittest.TestCase):
 
             plan = ApplyPlan("c" * 40, ("configuration.yaml",), ())
             tx = FileTransaction.prepare(tx_root, live, staging, plan)
+            tx.record_supervisor_backup("backup-123")
             tx.apply()
             self.assertEqual((live / "configuration.yaml").read_text(), "new: true\n")
 

@@ -66,6 +66,23 @@ class LiveFilesystemTests(unittest.TestCase):
                 LiveFilesystem(live).replace_from("configuration.yaml", source, digest)
             self.assertEqual(outside.read_text(), "outside: true\n")
 
+    def test_hash_failure_removes_exclusive_temp_and_allows_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live = root / "live"
+            source = root / "source.yaml"
+            live.mkdir()
+            source.write_text("new: true\n", encoding="utf-8")
+            fs = LiveFilesystem(live)
+
+            with self.assertRaisesRegex(LiveFilesystemError, "changed while copying"):
+                fs.replace_from("configuration.yaml", source, "0" * 64)
+
+            self.assertFalse((live / ".configuration.yaml.syncapp-new").exists())
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            fs.replace_from("configuration.yaml", source, digest)
+            self.assertEqual((live / "configuration.yaml").read_text(), "new: true\n")
+
     def test_replace_and_delete_use_parent_dir_fd(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -95,8 +112,12 @@ class LiveFilesystemTests(unittest.TestCase):
                 fs.replace_from("configuration.yaml", source, digest)
                 fs.delete("old.yaml")
 
-            self.assertTrue(any(src_fd is not None and dst_fd is not None for _, _, src_fd, dst_fd in replace_calls))
-            self.assertTrue(any(path == "old.yaml" and dir_fd is not None for path, dir_fd in unlink_calls))
+            self.assertTrue(
+                any(src_fd is not None and dst_fd is not None for _, _, src_fd, dst_fd in replace_calls)
+            )
+            self.assertTrue(
+                any(path == "old.yaml" and dir_fd is not None for path, dir_fd in unlink_calls)
+            )
 
 
 if __name__ == "__main__":

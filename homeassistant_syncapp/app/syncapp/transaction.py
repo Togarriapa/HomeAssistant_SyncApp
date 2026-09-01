@@ -52,6 +52,8 @@ def build_apply_plan(staging_dir: Path, baseline_paths: Iterable[str], commit: s
 def _assert_safe_live_path(root: Path, relative: str) -> Path:
     if not is_allowed_relative(relative):
         raise TransactionError(f"blocked live path in transaction: {relative}")
+    if root.is_symlink():
+        raise TransactionError("live configuration root must not be a symlink")
     root = root.resolve()
     current = root
     parts = Path(relative).parts
@@ -94,19 +96,30 @@ class FileTransaction:
             raise TransactionError("refusing empty remote apply transaction")
         if root.exists():
             raise TransactionError("an unresolved transaction already exists")
+
+        # Inspect the entire live target set before creating transaction state.
+        # This records which files existed before any snapshot work begins.
+        existed: set[str] = set()
+        for relative in plan.affected_paths:
+            target = _assert_safe_live_path(source_dir, relative)
+            if target.exists():
+                if not target.is_file():
+                    raise TransactionError(f"live target is not a regular file: {relative}")
+                existed.add(relative)
+
         root.mkdir(parents=True, exist_ok=False)
         tx = cls(root, source_dir, staging_dir, plan)
-        tx.snapshot_dir.mkdir()
+        tx.existed = existed
         try:
-            for relative in plan.affected_paths:
+            # Journal before snapshot copying so a crash during preparation is
+            # recognizable. No live file is ever modified in this state.
+            tx._write_journal("preparing")
+            tx.snapshot_dir.mkdir()
+            for relative in sorted(existed):
                 target = _assert_safe_live_path(source_dir, relative)
-                if target.exists():
-                    if not target.is_file():
-                        raise TransactionError(f"live target is not a regular file: {relative}")
-                    tx.existed.add(relative)
-                    backup = tx.snapshot_dir / relative
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(target, backup)
+                backup = tx.snapshot_dir / relative
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, backup)
             tx._write_journal("prepared")
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
@@ -119,7 +132,19 @@ class FileTransaction:
     ) -> "FileTransaction | None":
         journal = root / cls.JOURNAL
         if not journal.exists():
-            return None
+            if not root.exists():
+                return None
+            # An empty directory can only be left in the tiny interval between
+            # mkdir and the first journal write; no live mutation has happened.
+            try:
+                if not any(root.iterdir()):
+                    root.rmdir()
+                    return None
+            except OSError as exc:
+                raise TransactionError(f"cannot inspect orphan transaction directory: {exc}") from exc
+            raise TransactionError(
+                "transaction directory exists without a journal; refusing new work because transaction state is ambiguous"
+            )
         try:
             data = json.loads(journal.read_text(encoding="utf-8"))
             if data.get("version") != 1:
@@ -166,6 +191,8 @@ class FileTransaction:
         self._write_journal(state)
 
     def apply(self) -> None:
+        if self.state not in {"backed_up", "prepared"}:
+            raise TransactionError(f"transaction cannot apply from state {self.state}")
         self._write_journal("applying")
         for relative in self.plan.write_paths:
             target = _assert_safe_live_path(self.source_dir, relative)
@@ -232,7 +259,12 @@ def recover_active_transaction(
     *,
     health_timeout_seconds: int = 120,
 ) -> None:
-    """Fail closed after interruption: restore old files and prove Core can run them."""
+    """Fail closed after interruption, restoring Core only if live mutation began."""
+    if transaction.state in {"preparing", "prepared", "backed_up"}:
+        # No live target is modified before the 'applying' state is written.
+        transaction.discard()
+        return
+
     transaction.rollback(cleanup=False)
     try:
         supervisor.check_core_configuration()
@@ -273,8 +305,6 @@ def execute_verified_transaction(
         supervisor.wait_for_core_api(health_timeout_seconds)
         transaction.mark("verified")
     except Exception as apply_error:
-        # If Core was never asked to restart, restoring files is sufficient because
-        # the running process is still using the prior in-memory configuration.
         transaction.rollback(cleanup=not restart_requested)
         if restart_requested:
             try:

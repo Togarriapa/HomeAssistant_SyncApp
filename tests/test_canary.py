@@ -9,6 +9,8 @@ from canary import run_canary, run_filesystem_canary
 class FakeCanaryClient:
     def __init__(self):
         self.calls: list[str] = []
+        self.backup_name: str | None = None
+        self.backups: list[dict] | None = None
 
     def core_info(self) -> dict:
         self.calls.append("core-info")
@@ -50,7 +52,22 @@ class FakeCanaryClient:
 
     def create_homeassistant_backup(self, name: str) -> str:
         self.calls.append("backup")
+        self.backup_name = name
         return "backup-slug"
+
+    def list_backups(self) -> list[dict]:
+        self.calls.append("backup-inventory")
+        if self.backups is not None:
+            return self.backups
+        return [
+            {
+                "slug": "backup-slug",
+                "name": self.backup_name,
+                "date": "2026-09-01T22:00:00+00:00",
+                "protected": False,
+                "type": "partial",
+            }
+        ]
 
     def restart_core(self) -> None:
         self.calls.append("restart")
@@ -93,11 +110,11 @@ class CanaryTests(unittest.TestCase):
         self.assertNotIn("172.30.32.1", rendered)
         self.assertNotIn("disk_free", rendered)
         self.assertNotIn("version_latest", rendered)
-        self.assertNotIn("backup_slug", result)
+        self.assertNotIn("backup", result)
         self.assertNotIn("post_restart_core_api", result)
         self.assertNotIn("filesystem", result)
 
-    def test_backup_and_restart_require_explicit_flags(self):
+    def test_backup_is_inventory_verified_before_optional_restart(self):
         client = FakeCanaryClient()
         result = run_canary(  # type: ignore[arg-type]
             client,
@@ -114,12 +131,42 @@ class CanaryTests(unittest.TestCase):
                 "health",
                 "check",
                 "backup",
+                "backup-inventory",
                 "restart",
                 "wait:90",
             ],
         )
-        self.assertEqual(result["backup_slug"], "backup-slug")
+        self.assertEqual(result["backup"]["slug"], "backup-slug")  # type: ignore[index]
+        self.assertTrue(result["backup"]["inventory_verified"])  # type: ignore[index]
+        self.assertTrue(result["backup"]["name_matches_request"])  # type: ignore[index]
+        self.assertEqual(result["backup"]["type"], "partial")  # type: ignore[index]
         self.assertEqual(result["post_restart_core_api"], {"message": "API running."})
+
+    def test_backup_canary_fails_if_created_slug_is_missing_from_inventory(self):
+        client = FakeCanaryClient()
+        client.backups = [{"slug": "other", "name": "Other backup"}]
+
+        with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
+            run_canary(client, create_backup=True)  # type: ignore[arg-type]
+
+        self.assertEqual(client.calls[-2:], ["backup", "backup-inventory"])
+
+    def test_backup_canary_fails_if_inventory_name_does_not_match_request(self):
+        client = FakeCanaryClient()
+        client.backups = [{"slug": "backup-slug", "name": "Unexpected backup"}]
+
+        with self.assertRaisesRegex(RuntimeError, "name did not match"):
+            run_canary(client, create_backup=True)  # type: ignore[arg-type]
+
+    def test_backup_canary_fails_on_duplicate_slug_inventory_evidence(self):
+        client = FakeCanaryClient()
+        client.backups = [
+            {"slug": "backup-slug", "name": "one"},
+            {"slug": "backup-slug", "name": "two"},
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
+            run_canary(client, create_backup=True)  # type: ignore[arg-type]
 
     def test_readonly_filesystem_probe_does_not_create_files(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -193,8 +240,6 @@ class CanaryTests(unittest.TestCase):
             collision = live / ".syncapp-canary-fixed.tmp"
             collision.write_text("preserve race winner\n", encoding="utf-8")
 
-            # Model the race where the preflight saw a clean directory but a
-            # matching path appeared before the O_EXCL reservation.
             with mock.patch("canary._canary_temp_names", return_value=()), mock.patch(
                 "canary.secrets.token_hex", return_value="fixed"
             ):

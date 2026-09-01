@@ -38,14 +38,8 @@ def _environment_evidence(client: SupervisorClient) -> dict[str, object]:
     _require_nonempty_string(supervisor, "version", "Supervisor")
     _require_nonempty_string(host, "operating_system", "host")
     return {
-        "core": _selected_fields(
-            core,
-            ("version", "arch", "machine", "image"),
-        ),
-        "supervisor": _selected_fields(
-            supervisor,
-            ("version", "arch"),
-        ),
+        "core": _selected_fields(core, ("version", "arch", "machine", "image")),
+        "supervisor": _selected_fields(supervisor, ("version", "arch")),
         "host": _selected_fields(
             host,
             (
@@ -135,7 +129,6 @@ def run_filesystem_canary(
         if not stat.S_ISDIR(root_info.st_mode):
             raise RuntimeError("live configuration root is not a directory")
 
-        # Exercise dir_fd and no-follow support on the actual mounted root.
         dot_fd = os.open(".", root_flags, dir_fd=root_fd)
         try:
             dot_info = os.fstat(dot_fd)
@@ -220,10 +213,6 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
         finally:
             os.close(source_fd)
 
-        # Reserve the destination with O_EXCL before replacement. This makes
-        # os.replace overwrite only a file created by this canary invocation,
-        # never an unrelated pre-existing path even in the vanishingly unlikely
-        # event of a random-name collision.
         destination_fd = _create_owned_probe_file(root_fd, destination_name)
         created.add(destination_name)
         os.close(destination_fd)
@@ -298,6 +287,11 @@ def run_canary(
     filesystem_path: str = "configuration.yaml",
 ) -> dict[str, object]:
     """Exercise real integration contracts without modifying HA config files."""
+    if restart and not create_backup:
+        raise RuntimeError(
+            "refusing canary Core restart without a fresh inventory-verified backup"
+        )
+
     result: dict[str, object] = {
         "environment": _environment_evidence(client),
         "core_api": client.core_api_health(),
@@ -343,7 +337,7 @@ def main() -> int:
     parser.add_argument(
         "--restart",
         action="store_true",
-        help="explicitly restart Home Assistant Core and wait for API health",
+        help="restart Core only after --backup has created and inventory-verified a fresh backup",
     )
     parser.add_argument(
         "--filesystem",
@@ -372,6 +366,8 @@ def main() -> int:
     args = parser.parse_args()
     if not 30 <= args.timeout <= 600:
         parser.error("--timeout must be between 30 and 600 seconds")
+    if args.restart and not args.backup:
+        parser.error("--restart requires --backup")
 
     result = run_canary(
         SupervisorClient(),

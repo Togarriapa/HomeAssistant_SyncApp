@@ -36,8 +36,18 @@ class InvarianceCanaryClient:
                 "slug": "backup-slug",
                 "name": self.backup_name,
                 "type": "partial",
+                "content": {"homeassistant": True, "addons": [], "folders": []},
             }
         ]
+
+    def backup_info(self, slug: str) -> dict:
+        return {
+            "slug": slug,
+            "name": self.backup_name,
+            "type": "partial",
+            "homeassistant": "2026.9.0",
+            "homeassistant_exclude_database": True,
+        }
 
     def restart_core(self) -> None:
         if self.mutate_on_restart:

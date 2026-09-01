@@ -38,29 +38,51 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
     if active is None:
         return False
 
+    if active.state == "verified_drift":
+        raise TransactionError(
+            "a previously verified/adopted transaction has subsequent live configuration drift; "
+            "recovery evidence is preserved and automatic rollback is blocked"
+        )
+
     # A crash can happen after Core was verified and adopt_remote() advanced the
-    # isolated Git HEAD, but before the manifest/journal cleanup finished. In that
-    # state rolling live files back would make live configuration disagree with
-    # the already-adopted Git baseline. If HEAD proves the exact verified commit
-    # was adopted, finish the bookkeeping instead of reverting a successful apply.
+    # isolated Git HEAD, but before manifest/journal cleanup finished. Once Git has
+    # adopted the verified commit, automatically rolling back live files would move
+    # the live tree behind the repository baseline. Prove both Git HEAD and the live
+    # managed files still match before finalizing bookkeeping.
     if active.state == "verified":
         try:
-            if repository.head() == active.plan.commit:
+            adopted = repository.head() == active.plan.commit
+        except Exception as exc:
+            raise TransactionError(
+                "verified transaction recovery cannot prove the Git baseline; "
+                "leaving live files and recovery journal untouched"
+            ) from exc
+
+        if adopted:
+            drift = detect_live_drift(repository, settings.source_dir)
+            if not drift.clean:
+                active.mark("verified_drift")
+                raise TransactionError(
+                    "verified remote commit was adopted, but live managed files changed before "
+                    "transaction cleanup; refusing both finalize and rollback: "
+                    + ", ".join(drift.changed)
+                )
+            try:
                 save_manifest(
                     settings.manifest_path,
                     _managed_paths_at_commit(repository, active.plan.commit),
                 )
                 active.complete()
-                LOGGER.warning(
-                    "Finalized previously verified remote commit %s after interrupted post-verification bookkeeping",
-                    active.plan.commit,
-                )
-                return True
-        except Exception:
-            LOGGER.exception(
-                "Could not prove that verified transaction %s was already adopted; falling back to rollback",
+            except Exception as exc:
+                raise TransactionError(
+                    "verified transaction matched Git/live state, but bookkeeping could not be finalized; "
+                    "recovery journal is preserved for retry"
+                ) from exc
+            LOGGER.warning(
+                "Finalized previously verified remote commit %s after interrupted post-verification bookkeeping",
                 active.plan.commit,
             )
+            return True
 
     LOGGER.error(
         "Found interrupted remote-apply transaction for %s in state %s; rolling back before sync",

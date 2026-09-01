@@ -27,6 +27,7 @@ class BackupRetentionTests(unittest.TestCase):
             {"slug": "protected", "name": "SyncApp pre-apply protected", "date": "2026-08-01T12:00:00+00:00", "protected": True},
             {"slug": "manual", "name": "Manual backup", "date": "2026-07-01T12:00:00+00:00", "protected": False},
             {"slug": "ambiguous", "name": "SyncApp pre-apply missing date", "protected": False},
+            {"slug": "naive", "name": "SyncApp pre-apply timezone ambiguous", "date": "2026-01-01T00:00:00", "protected": False},
         ]
         expired = select_expired_syncapp_backups(backups, retention_count=2)
         self.assertEqual(expired, ("old",))

@@ -48,6 +48,46 @@ class SyncEngine:
             )
             return
 
+        if relationship == "local_ahead":
+            if self.settings.dry_run:
+                LOGGER.warning(
+                    "Local branch is ahead of GitHub, but dry-run is enabled; push skipped"
+                )
+                return
+            LOGGER.warning("Local branch is ahead of GitHub; retrying previous push")
+            self.repository.push()
+            LOGGER.info("Previously committed local changes were pushed successfully")
+            return
+
+        # A missing manifest means SyncApp has not yet established a managed baseline.
+        # If the configured remote branch is already populated, never silently choose
+        # local or remote authority. The only supported explicit bootstrap today is
+        # publishing the validated local HA configuration over an *equal* cloned
+        # remote baseline. Remote-authoritative bootstrap needs its own guarded
+        # transaction path and remains deliberately unsupported here.
+        if not self.settings.manifest_path.exists() and self.repository.remote_head() is not None:
+            if relationship != "equal":
+                LOGGER.error(
+                    "Initial synchronization is ambiguous: remote branch %s is populated and Git relationship is %s; "
+                    "refusing to choose an authority automatically",
+                    self.settings.branch,
+                    relationship,
+                )
+                return
+            if not self.settings.initial_local_publish_enabled:
+                LOGGER.error(
+                    "Initial synchronization is blocked because remote branch %s is already populated. "
+                    "Set initial_local_publish_enabled=true only if the live Home Assistant configuration is intentionally "
+                    "authoritative and may replace the remote managed baseline",
+                    self.settings.branch,
+                )
+                return
+            LOGGER.warning(
+                "Initial local publish is explicitly enabled; validated live Home Assistant configuration will be treated "
+                "as authoritative for remote branch %s",
+                self.settings.branch,
+            )
+
         if relationship in {"remote_only", "remote_ahead"}:
             try:
                 staged = stage_remote_configuration(
@@ -81,17 +121,6 @@ class SyncEngine:
                 staged.commit,
                 len(affected),
             )
-            return
-
-        if relationship == "local_ahead":
-            if self.settings.dry_run:
-                LOGGER.warning(
-                    "Local branch is ahead of GitHub, but dry-run is enabled; push skipped"
-                )
-                return
-            LOGGER.warning("Local branch is ahead of GitHub; retrying previous push")
-            self.repository.push()
-            LOGGER.info("Previously committed local changes were pushed successfully")
             return
 
         previous_managed = load_manifest(self.settings.manifest_path)

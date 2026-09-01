@@ -19,6 +19,9 @@
 - Validate local-to-GitHub candidates with the same static size/syntax rules and live Supervisor `/core/check` before creating commits.
 - Refuse local commits when the existing Git index tracks any blocked secret/runtime path.
 - Discard rejected and dry-run local candidates from the isolated Git worktree so staged state cannot leak into later cycles.
+- Fail closed on first synchronization when the configured remote branch is already populated instead of silently choosing local or remote authority.
+- Add `initial_local_publish_enabled: false`; it must be explicitly enabled before a fresh instance may publish validated live configuration over an already-populated equal remote baseline.
+- Keep non-equal populated first-sync states blocked even when local initial publish is enabled; remote-authoritative bootstrap remains deliberately unsupported until it has its own staged/backup/verify transaction path.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.

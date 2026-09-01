@@ -8,6 +8,11 @@ from pathlib import Path
 import shutil
 from typing import Protocol
 
+from .journal_integrity import (
+    JournalIntegrityError,
+    attach_journal_digest,
+    validate_journal_payload,
+)
 from .policy import is_allowed_relative
 
 
@@ -219,45 +224,42 @@ class FileTransaction:
             )
         try:
             data = json.loads(journal.read_text(encoding="utf-8"))
-            if data.get("version") != 1:
-                raise TransactionError("unsupported transaction journal version")
-            raw_hashes = data.get("write_sha256", {})
-            if not isinstance(raw_hashes, dict):
-                raise TransactionError("invalid staged-content hash map in transaction journal")
+            record = validate_journal_payload(data, root / cls.SNAPSHOT)
             plan = ApplyPlan(
-                commit=str(data["commit"]),
-                write_paths=tuple(str(x) for x in data["write_paths"]),
-                delete_paths=tuple(str(x) for x in data["delete_paths"]),
-                write_sha256=tuple(sorted((str(k), str(v)) for k, v in raw_hashes.items())),
+                commit=record.commit,
+                write_paths=record.write_paths,
+                delete_paths=record.delete_paths,
+                write_sha256=record.write_sha256,
             )
             tx = cls(root, source_dir, staging_dir, plan)
-            tx.existed = {str(x) for x in data.get("existed", [])}
-            backup = data.get("supervisor_backup")
-            tx.supervisor_backup = str(backup) if backup else None
-            tx.state = str(data.get("state", "unknown"))
+            tx.existed = set(record.existed)
+            tx.supervisor_backup = record.supervisor_backup
+            tx.state = record.state
             # A completed journal can remain if cleanup crashed after the durable
             # state transition. Do not discard it merely because the word
             # "completed" was persisted: the recovery layer must first prove that
             # Git still points at this verified commit and that live managed files
             # still match it. Only then may cleanup be retried safely.
             return tx
-        except TransactionError:
+        except (TransactionError, JournalIntegrityError):
             raise
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise TransactionError(f"invalid recovery journal: {exc}") from exc
 
     def _write_journal(self, state: str) -> None:
         self.state = state
-        payload = {
-            "version": 1,
-            "state": state,
-            "commit": self.plan.commit,
-            "write_paths": list(self.plan.write_paths),
-            "delete_paths": list(self.plan.delete_paths),
-            "write_sha256": self.plan.write_hashes,
-            "existed": sorted(self.existed),
-            "supervisor_backup": self.supervisor_backup,
-        }
+        payload = attach_journal_digest(
+            {
+                "version": 2,
+                "state": state,
+                "commit": self.plan.commit,
+                "write_paths": list(self.plan.write_paths),
+                "delete_paths": list(self.plan.delete_paths),
+                "write_sha256": self.plan.write_hashes,
+                "existed": sorted(self.existed),
+                "supervisor_backup": self.supervisor_backup,
+            }
+        )
         temporary = self.journal_path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")

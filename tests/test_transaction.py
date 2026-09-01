@@ -164,7 +164,7 @@ class TransactionTests(unittest.TestCase):
             (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
             (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
 
-            plan = ApplyPlan("g" * 40, ("configuration.yaml",), ())
+            plan = ApplyPlan("a" * 40, ("configuration.yaml",), ())
             tx = FileTransaction.prepare(tx_root, live, staging, plan)
             supervisor = FakeSupervisor(fail_health_always=True)
 

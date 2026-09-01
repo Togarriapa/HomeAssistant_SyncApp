@@ -65,7 +65,7 @@ def _verify_created_backup(
     slug: str,
     expected_name: str,
 ) -> dict[str, object]:
-    """Prove the synchronous backup is visible in Supervisor inventory."""
+    """Prove the synchronous partial backup is visible in Supervisor inventory."""
     matches = [item for item in client.list_backups() if item.get("slug") == slug]
     if len(matches) != 1:
         raise RuntimeError(
@@ -80,13 +80,19 @@ def _verify_created_backup(
             "Supervisor backup inventory entry name did not match the canary request: "
             f"expected {expected_name!r}, got {name!r}"
         )
+    if backup.get("type") != "partial":
+        raise RuntimeError(
+            "Supervisor backup inventory entry was not the requested partial backup: "
+            f"got type {backup.get('type')!r}"
+        )
 
     evidence: dict[str, object] = {
         "slug": slug,
         "name_matches_request": True,
+        "type": "partial",
         "inventory_verified": True,
     }
-    for field in ("date", "protected", "type"):
+    for field in ("date", "protected"):
         if field in backup:
             evidence[field] = backup[field]
     return evidence

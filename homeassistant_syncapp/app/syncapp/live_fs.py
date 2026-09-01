@@ -35,6 +35,10 @@ class LiveFilesystem:
         self.root = root
 
     def _open_root(self) -> int:
+        # Keep the established operator-facing error explicit. This pre-check is
+        # diagnostic only; O_NOFOLLOW below remains the actual race-safe gate.
+        if self.root.is_symlink():
+            raise LiveFilesystemError("live configuration root must not be a symlink")
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
             return os.open(self.root, flags)

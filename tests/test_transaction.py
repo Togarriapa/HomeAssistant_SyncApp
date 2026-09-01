@@ -12,8 +12,9 @@ from syncapp.transaction import (
 
 
 class FakeSupervisor:
-    def __init__(self, *, fail_check: bool = False):
+    def __init__(self, *, fail_check: bool = False, fail_health_once: bool = False):
         self.fail_check = fail_check
+        self.fail_health_once = fail_health_once
         self.backups = 0
         self.checks = 0
         self.restarts = 0
@@ -35,6 +36,9 @@ class FakeSupervisor:
 
     def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict:
         self.health_checks += 1
+        if self.fail_health_once:
+            self.fail_health_once = False
+            raise RuntimeError("Core did not become healthy")
         return {"message": "API running."}
 
 
@@ -71,6 +75,7 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 1)
             self.assertEqual(supervisor.health_checks, 1)
+            self.assertEqual(tx.state, "verified")
             self.assertTrue(tx_root.exists())
 
             tx.complete()
@@ -96,6 +101,27 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
+
+    def test_failed_post_restart_health_restores_and_restarts_old_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            plan = ApplyPlan("e" * 40, ("configuration.yaml",), ())
+            tx = FileTransaction.prepare(tx_root, live, staging, plan)
+            supervisor = FakeSupervisor(fail_health_once=True)
+
+            with self.assertRaisesRegex(TransactionError, "restored"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertFalse(tx_root.exists())
+            self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.checks, 2)
+            self.assertEqual(supervisor.restarts, 2)
+            self.assertEqual(supervisor.health_checks, 2)
 
     def test_interrupted_applied_transaction_is_recovered(self):
         with tempfile.TemporaryDirectory() as temporary:

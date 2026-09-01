@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 
-from syncapp.git_repo import GitRepository
+from syncapp.git_repo import GitError, GitRepository
 
 
 def git(cwd: Path, *args: str) -> None:
@@ -61,6 +61,46 @@ class GitRepositoryTests(unittest.TestCase):
 
     def test_equal_after_clone(self) -> None:
         self.assertEqual(self.repository.relationship(), "equal")
+
+    def test_existing_clone_refuses_implicit_retarget(self) -> None:
+        other_remote = self.root / "other-remote.git"
+        other_remote.mkdir()
+        git(other_remote, "init", "--bare")
+        original_origin = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=self.work,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+
+        retargeted = GitRepository(
+            path=self.work,
+            remote_url=str(other_remote),
+            branch="main",
+            token=None,
+            user_name="SyncApp Test",
+            user_email="syncapp-test@example.invalid",
+        )
+
+        with self.assertRaisesRegex(GitError, "refusing implicit retargeting"):
+            retargeted.ensure()
+
+        current_origin = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=self.work,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertEqual(current_origin, original_origin)
+        self.assertEqual(self.repository.relationship(), "equal")
+
+    def test_existing_clone_without_origin_fails_closed(self) -> None:
+        git(self.work, "remote", "remove", "origin")
+
+        with self.assertRaisesRegex(GitError, "no readable origin"):
+            self.repository.ensure()
 
     def test_local_ahead(self) -> None:
         (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")

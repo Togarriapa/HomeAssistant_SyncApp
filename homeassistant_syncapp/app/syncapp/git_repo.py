@@ -163,11 +163,8 @@ class GitRepository:
             "merge-base", "--is-ancestor", older, newer, check=False
         ).returncode == 0
 
-    def remote_tree_entries(self) -> list[GitTreeEntry]:
-        remote = self.remote_head()
-        if remote is None:
-            return []
-        raw = self._run_bytes("ls-tree", "-r", "-z", remote).stdout
+    def tree_entries(self, ref: str) -> list[GitTreeEntry]:
+        raw = self._run_bytes("ls-tree", "-r", "-z", ref).stdout
         entries: list[GitTreeEntry] = []
         for record in raw.split(b"\0"):
             if not record:
@@ -182,6 +179,12 @@ class GitRepository:
             path = raw_path.decode("utf-8")
             entries.append(GitTreeEntry(mode, object_type, object_id, path))
         return entries
+
+    def remote_tree_entries(self) -> list[GitTreeEntry]:
+        remote = self.remote_head()
+        if remote is None:
+            return []
+        return self.tree_entries(remote)
 
     def blob_size(self, object_id: str) -> int:
         output = self._run("cat-file", "-s", object_id).stdout.strip()

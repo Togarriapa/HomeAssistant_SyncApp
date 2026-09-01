@@ -87,6 +87,9 @@ class SupervisorClient:
                     "homeassistant_exclude_database": True,
                     "background": False,
                 },
+                # A synchronous HA backup can legitimately take several minutes
+                # on slower storage. It occurs before any live file mutation.
+                timeout=900,
             ),
             "Home Assistant backup",
         )
@@ -108,8 +111,6 @@ class SupervisorClient:
     def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict:
         deadline = time.monotonic() + timeout_seconds
         last_error: Exception | None = None
-        # Give the accepted restart a chance to begin before the first health probe.
-        time.sleep(min(2.0, max(0.0, timeout_seconds / 4)))
         while time.monotonic() < deadline:
             try:
                 return self.core_api_health(timeout=max(1, min(10, timeout_seconds)))

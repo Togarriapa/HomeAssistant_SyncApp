@@ -1,0 +1,33 @@
+name: HomeAssistant SyncApp
+version: "0.1.0"
+slug: homeassistant_syncapp
+description: Safely synchronize Home Assistant configuration with GitHub
+url: "https://github.com/Togarriapa/HomeAssistant_SyncApp"
+startup: application
+boot: auto
+init: false
+stage: experimental
+arch:
+  - aarch64
+  - amd64
+hassio_api: true
+hassio_role: manager
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
+options:
+  repository_url: null
+  branch: main
+  poll_interval_seconds: 60
+  dry_run: true
+  git_user_name: HomeAssistant SyncApp
+  git_user_email: homeassistant-syncapp@example.invalid
+schema:
+  repository_url: url
+  branch: str
+  github_token: password?
+  poll_interval_seconds: int(30,86400)
+  dry_run: bool
+  git_user_name: str
+  git_user_email: email

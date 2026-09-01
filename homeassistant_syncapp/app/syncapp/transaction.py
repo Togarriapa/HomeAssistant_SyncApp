@@ -158,6 +158,7 @@ class FileTransaction:
         self.snapshot_dir = root / self.SNAPSHOT
         self.journal_path = root / self.JOURNAL
         self.existed: set[str] = set()
+        self.snapshot_sha256: dict[str, str] = {}
         self.supervisor_backup: str | None = None
         self.state = "new"
 
@@ -198,6 +199,7 @@ class FileTransaction:
                 shutil.copy2(target, backup)
                 _fsync_file(backup)
                 _fsync_directory(backup.parent)
+                tx.snapshot_sha256[relative] = _sha256_file(backup)
             tx._write_journal("prepared")
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
@@ -233,13 +235,9 @@ class FileTransaction:
             )
             tx = cls(root, source_dir, staging_dir, plan)
             tx.existed = set(record.existed)
+            tx.snapshot_sha256 = dict(record.snapshot_sha256)
             tx.supervisor_backup = record.supervisor_backup
             tx.state = record.state
-            # A completed journal can remain if cleanup crashed after the durable
-            # state transition. Do not discard it merely because the word
-            # "completed" was persisted: the recovery layer must first prove that
-            # Git still points at this verified commit and that live managed files
-            # still match it. Only then may cleanup be retried safely.
             return tx
         except (TransactionError, JournalIntegrityError):
             raise
@@ -257,6 +255,7 @@ class FileTransaction:
                 "delete_paths": list(self.plan.delete_paths),
                 "write_sha256": self.plan.write_hashes,
                 "existed": sorted(self.existed),
+                "snapshot_sha256": dict(sorted(self.snapshot_sha256.items())),
                 "supervisor_backup": self.supervisor_backup,
             }
         )
@@ -275,8 +274,22 @@ class FileTransaction:
     def mark(self, state: str) -> None:
         self._write_journal(state)
 
+    def assert_snapshot_unchanged(self) -> None:
+        """Prove pinned rollback bytes are still the prepared snapshot."""
+        if not self.snapshot_sha256:
+            return
+        if set(self.snapshot_sha256) != self.existed:
+            raise TransactionError("transaction journal is missing rollback snapshot hashes")
+        for relative, expected in self.snapshot_sha256.items():
+            backup = self.snapshot_dir / relative
+            if backup.is_symlink() or not backup.is_file():
+                raise TransactionError(f"rollback snapshot disappeared or changed type: {relative}")
+            if _sha256_file(backup) != expected:
+                raise TransactionError(f"rollback snapshot changed after preparation: {relative}")
+
     def assert_live_unchanged(self) -> None:
         """Prove affected live targets still match the snapshot taken at prepare()."""
+        self.assert_snapshot_unchanged()
         for relative in self.plan.affected_paths:
             target = _assert_safe_live_path(self.source_dir, relative)
             if relative in self.existed:
@@ -307,9 +320,12 @@ class FileTransaction:
                 )
 
     def apply(self) -> None:
-        if self.state not in {"backed_up", "prepared"}:
-            raise TransactionError(f"transaction cannot apply from state {self.state}")
+        if self.state != "backed_up":
+            raise TransactionError(
+                f"transaction cannot apply from state {self.state}; a recorded Supervisor backup is required"
+            )
         self.assert_staging_unchanged()
+        self.assert_snapshot_unchanged()
         self._write_journal("applying")
         for relative in self.plan.write_paths:
             target = _assert_safe_live_path(self.source_dir, relative)
@@ -336,6 +352,7 @@ class FileTransaction:
         self._write_journal("applied")
 
     def rollback(self, *, cleanup: bool = True) -> None:
+        self.assert_snapshot_unchanged()
         self._write_journal("rolling_back")
         failures: list[str] = []
         for relative in self.plan.affected_paths:
@@ -345,10 +362,14 @@ class FileTransaction:
                     backup = self.snapshot_dir / relative
                     if not backup.is_file():
                         raise TransactionError(f"snapshot missing for {relative}")
+                    if self.snapshot_sha256 and _sha256_file(backup) != self.snapshot_sha256[relative]:
+                        raise TransactionError(f"rollback snapshot changed before restore: {relative}")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     temporary = target.with_name(target.name + ".syncapp-rollback")
                     try:
                         shutil.copy2(backup, temporary)
+                        if self.snapshot_sha256 and _sha256_file(temporary) != self.snapshot_sha256[relative]:
+                            raise TransactionError(f"rollback snapshot changed while copying: {relative}")
                         _durable_replace(temporary, target)
                     finally:
                         temporary.unlink(missing_ok=True)

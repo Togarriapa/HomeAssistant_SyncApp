@@ -49,6 +49,8 @@ class Settings:
     backup_retention_count: int = 10
     initial_local_publish_enabled: bool = False
     initial_remote_apply_enabled: bool = False
+    remote_max_deletions: int = 25
+    remote_max_deletion_percent: int = 50
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
     staging_dir: Path = Path("/data/staging")
@@ -105,6 +107,14 @@ class Settings:
         if not 0 <= backup_retention_count <= 100:
             raise ValueError("backup_retention_count must be between 0 and 100")
 
+        remote_max_deletions = int(raw.get("remote_max_deletions", 25))
+        if not 0 <= remote_max_deletions <= 10000:
+            raise ValueError("remote_max_deletions must be between 0 and 10000")
+
+        remote_max_deletion_percent = int(raw.get("remote_max_deletion_percent", 50))
+        if not 0 <= remote_max_deletion_percent <= 100:
+            raise ValueError("remote_max_deletion_percent must be between 0 and 100")
+
         token = raw.get("github_token")
         token = str(token).strip() if token else None
         dry_run = bool(raw.get("dry_run", True))
@@ -133,4 +143,6 @@ class Settings:
             backup_retention_count=backup_retention_count,
             initial_local_publish_enabled=initial_local_publish_enabled,
             initial_remote_apply_enabled=initial_remote_apply_enabled,
+            remote_max_deletions=remote_max_deletions,
+            remote_max_deletion_percent=remote_max_deletion_percent,
         )

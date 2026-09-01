@@ -5,6 +5,8 @@
 - Add guarded remote live application behind `remote_apply_enabled: false` and `dry_run: true` defaults.
 - Treat fetched remote trees as untrusted input and statically validate YAML, JSON, and Python custom-component syntax outside `/homeassistant`.
 - Block ordinary remote apply when the live allowed configuration has drifted from local Git HEAD.
+- Add a pre-transaction destructive-change gate for remote deletions: by default reject candidates deleting more than 25 policy-approved paths or more than 50% of the active baseline, before Supervisor backup or live mutation.
+- Apply the same remote deletion budget to remote-authoritative first bootstrap using the policy-approved live configuration as its baseline; thresholds are configurable without bypassing any other validation, backup, verification, rollback, or blocked-file policy.
 - Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
 - Write new transaction journals as version 2 with a canonical SHA-256 integrity checksum and validate all recovery-critical fields before interpreting transaction state.
 - Fail closed on corrupt recovery evidence: reject unknown states, invalid Git object IDs, duplicate/overlapping apply paths, blocked or traversal paths, malformed staged hashes, invalid backup slugs, and `existed` entries outside the apply plan.

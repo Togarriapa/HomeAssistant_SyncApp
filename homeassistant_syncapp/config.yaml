@@ -24,6 +24,8 @@ options:
   remote_apply_enabled: false
   initial_local_publish_enabled: false
   initial_remote_apply_enabled: false
+  remote_max_deletions: 25
+  remote_max_deletion_percent: 50
   verify_timeout_seconds: 120
   backup_retention_count: 10
   git_user_name: HomeAssistant SyncApp
@@ -38,6 +40,8 @@ schema:
   remote_apply_enabled: bool
   initial_local_publish_enabled: bool
   initial_remote_apply_enabled: bool
+  remote_max_deletions: int(0,10000)
+  remote_max_deletion_percent: int(0,100)
   verify_timeout_seconds: int(30,600)
   backup_retention_count: int(0,100)
   git_user_name: str

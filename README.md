@@ -25,7 +25,9 @@ The remote-to-local workflow is:
 
 Remote Git data is staged outside `/homeassistant`, validated, and—only when explicitly enabled—applied through a journaled transaction with a Supervisor backup, Home Assistant configuration check, restart health verification, and rollback path. Live configuration drift blocks ordinary remote apply rather than being overwritten silently.
 
-A fresh SyncApp instance connected to an already-populated configuration repository fails closed until initial authority is selected explicitly. See `homeassistant_syncapp/BOOTSTRAP.md` for the local-authoritative and remote-authoritative first-sync contracts. Remote-authoritative bootstrap uses the same staged, backed-up, verified transaction machinery; it does not disable ordinary drift protection globally.
+Before a staged remote candidate can enter the Backup/Apply transaction, SyncApp also enforces a destructive-deletion budget. By default, a candidate is rejected if it deletes more than 25 policy-approved files or more than 50% of the current managed baseline. This prevents a mistaken or compromised but syntactically valid remote commit from silently converging Home Assistant to a drastically reduced configuration. See `homeassistant_syncapp/REMOTE_DELETION_SAFETY.md`.
+
+A fresh SyncApp instance connected to an already-populated configuration repository fails closed until initial authority is selected explicitly. See `homeassistant_syncapp/BOOTSTRAP.md` for the local-authoritative and remote-authoritative first-sync contracts. Remote-authoritative bootstrap uses the same staged, backed-up, verified transaction machinery; it does not disable ordinary drift protection globally, and its policy-approved live baseline is subject to the same remote-deletion budget.
 
 Local changes are filtered before they are committed to the configured managed Home Assistant repository so secrets, databases, logs, caches, generated files, private-key material, and runtime state are not pushed accidentally. The same blocked-file policy is enforced for remote application and first-run bootstrap.
 

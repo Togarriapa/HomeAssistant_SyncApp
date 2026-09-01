@@ -4,6 +4,7 @@ import logging
 
 from .backup_retention import prune_syncapp_backups
 from .config import Settings
+from .destructive_change import DestructiveChangeError, enforce_remote_deletion_budget
 from .drift import detect_live_drift
 from .git_repo import GitRepository
 from .mirror import save_manifest
@@ -116,6 +117,25 @@ def _execute_staged_apply(
         staged.commit,
         live_dir=settings.source_dir,
     )
+    try:
+        deletion_result = enforce_remote_deletion_budget(
+            plan.delete_paths,
+            baseline_paths,
+            max_deletions=settings.remote_max_deletions,
+            max_deletion_percent=settings.remote_max_deletion_percent,
+        )
+    except DestructiveChangeError as exc:
+        raise TransactionError(str(exc)) from exc
+
+    if deletion_result.deleted_paths:
+        LOGGER.warning(
+            "Remote candidate %s deletes %d/%d managed paths (%.1f%%); within configured safety budget",
+            staged.commit,
+            deletion_result.deleted_paths,
+            deletion_result.baseline_paths,
+            deletion_result.deletion_percent,
+        )
+
     if not plan.affected_paths:
         try:
             if verify_noop:

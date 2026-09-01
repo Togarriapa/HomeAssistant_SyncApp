@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from syncapp.apply import apply_staged_initial_remote, apply_staged_remote
+from syncapp.apply import (
+    apply_staged_initial_remote,
+    apply_staged_remote,
+    recover_interrupted_apply,
+)
 from syncapp.config import Settings
 from syncapp.git_repo import GitRepository
 from syncapp.staging import stage_remote_configuration
@@ -147,6 +151,34 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertIn("configuration.yaml", affected)
         self.assertIn("obsolete.yaml", affected)
 
+    def test_post_adoption_manifest_failure_preserves_verified_live_state_for_retry(self) -> None:
+        remote = self._push_remote_candidate()
+        staged = stage_remote_configuration(self.repository, self.staging)
+        supervisor = FakeSupervisor()
+
+        with patch("syncapp.apply.SupervisorClient", return_value=supervisor), patch(
+            "syncapp.apply.save_manifest", side_effect=OSError("disk full")
+        ):
+            with self.assertRaisesRegex(TransactionError, "post-verification bookkeeping failed"):
+                apply_staged_remote(self.repository, self.settings, staged)
+
+        self.assertEqual(self.repository.head(), remote)
+        self.assertEqual((self.live / "configuration.yaml").read_text(), "version: new\n")
+        self.assertEqual((self.live / "automations.yaml").read_text(), "[]\n")
+        self.assertFalse((self.live / "obsolete.yaml").exists())
+        self.assertTrue(self.transaction.exists())
+        self.assertFalse(self.manifest.exists())
+        self.assertEqual(supervisor.restarts, 1)
+        self.assertEqual(supervisor.health_checks, 1)
+
+        self.assertTrue(recover_interrupted_apply(self.settings, self.repository))
+
+        self.assertEqual(self.repository.head(), remote)
+        self.assertEqual((self.live / "configuration.yaml").read_text(), "version: new\n")
+        self.assertTrue(self.manifest.exists())
+        self.assertFalse(self.transaction.exists())
+        self.assertEqual(supervisor.restarts, 1)
+
     def test_initial_remote_bootstrap_replaces_only_policy_allowed_live_baseline(self) -> None:
         remote = self.repository.remote_head()
         assert remote is not None
@@ -189,7 +221,7 @@ class ApplyIntegrationTests(unittest.TestCase):
 
         supervisor = FakeSupervisor(health_hook=move_remote)
         with patch("syncapp.apply.SupervisorClient", return_value=supervisor):
-            with self.assertRaisesRegex(TransactionError, "remote apply failed safely"):
+            with self.assertRaisesRegex(TransactionError, "rolled back safely"):
                 apply_staged_remote(self.repository, self.settings, staged)
 
         self.assertEqual((self.live / "configuration.yaml").read_text(), "version: old\n")

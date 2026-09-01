@@ -78,6 +78,34 @@ class SupervisorClientTests(unittest.TestCase):
         with self.assertRaisesRegex(SupervisorError, "configuration invalid"):
             client.check_core_configuration()
 
+    def test_core_info_uses_core_info_endpoint(self) -> None:
+        payload = {"version": "2026.9.0", "arch": "amd64"}
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": payload}]
+        )
+        self.assertEqual(client.core_info(), payload)
+        self.assertEqual(client.calls[0][:2], ("GET", "/core/info"))
+
+    def test_supervisor_info_uses_supervisor_info_endpoint(self) -> None:
+        payload = {"version": "2026.09.0", "arch": "amd64"}
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": payload}]
+        )
+        self.assertEqual(client.supervisor_info(), payload)
+        self.assertEqual(client.calls[0][:2], ("GET", "/supervisor/info"))
+
+    def test_host_info_uses_host_info_endpoint(self) -> None:
+        payload = {
+            "operating_system": "Home Assistant OS 17.0",
+            "kernel": "6.12.0-haos",
+            "agent_version": "1.7.2",
+        }
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": payload}]
+        )
+        self.assertEqual(client.host_info(), payload)
+        self.assertEqual(client.calls[0][:2], ("GET", "/host/info"))
+
     def test_core_health_uses_supervisor_core_api_proxy(self) -> None:
         client = RecordingSupervisorClient([{"message": "API running."}])
         result = client.core_api_health(timeout=7)

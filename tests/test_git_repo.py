@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -133,6 +134,14 @@ class GitRepositoryTests(unittest.TestCase):
             self.repository.push()
 
         self.assertEqual(self.repository.relationship(), "local_ahead")
+        refs = subprocess.run(
+            ["git", "show-ref"],
+            cwd=other_remote,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertEqual(refs, "")
 
     def test_fetch_rechecks_remote_provenance_after_startup(self) -> None:
         other_remote = self._other_remote()
@@ -169,6 +178,39 @@ class GitRepositoryTests(unittest.TestCase):
             stdout=subprocess.PIPE,
         ).stdout.strip()
         self.assertEqual(current_branch, "main")
+        self.assertEqual(self.repository.relationship(), "equal")
+
+    def test_repository_hooks_are_disabled_for_managed_commits(self) -> None:
+        hook_marker = self.root / "hook-ran"
+        hook = self.work / ".git" / "hooks" / "pre-commit"
+        hook.write_text(
+            f"#!/bin/sh\necho ran > {hook_marker}\nexit 97\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")
+        self.repository.add_all()
+        commit = self.repository.commit("hook isolation")
+
+        self.assertTrue(commit)
+        self.assertFalse(hook_marker.exists())
+
+    def test_repository_hooks_are_disabled_for_managed_pushes(self) -> None:
+        hook_marker = self.root / "push-hook-ran"
+        hook = self.work / ".git" / "hooks" / "pre-push"
+        hook.write_text(
+            f"#!/bin/sh\necho ran > {hook_marker}\nexit 98\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        (self.work / "scripts.yaml").write_text("{}\n", encoding="utf-8")
+        self.repository.add_all()
+        self.repository.commit("push hook isolation")
+        self.repository.push()
+
+        self.assertFalse(hook_marker.exists())
         self.assertEqual(self.repository.relationship(), "equal")
 
     def test_local_ahead(self) -> None:

@@ -21,19 +21,33 @@ def _selected_fields(data: dict, fields: tuple[str, ...]) -> dict[str, object]:
     return {field: data[field] for field in fields if field in data}
 
 
+def _require_nonempty_string(data: dict, field: str, component: str) -> None:
+    value = data.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(
+            f"canary environment evidence is missing required {component} {field}"
+        )
+
+
 def _environment_evidence(client: SupervisorClient) -> dict[str, object]:
     """Return a shareable allowlisted environment fingerprint for canary evidence."""
+    core = client.core_info()
+    supervisor = client.supervisor_info()
+    host = client.host_info()
+    _require_nonempty_string(core, "version", "Core")
+    _require_nonempty_string(supervisor, "version", "Supervisor")
+    _require_nonempty_string(host, "operating_system", "host")
     return {
         "core": _selected_fields(
-            client.core_info(),
+            core,
             ("version", "arch", "machine", "image"),
         ),
         "supervisor": _selected_fields(
-            client.supervisor_info(),
+            supervisor,
             ("version", "arch"),
         ),
         "host": _selected_fields(
-            client.host_info(),
+            host,
             (
                 "operating_system",
                 "kernel",

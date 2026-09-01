@@ -17,6 +17,7 @@ class ConfigTests(unittest.TestCase):
         settings = self._load({"repository_url": "https://github.com/example/config.git"})
         self.assertTrue(settings.dry_run)
         self.assertFalse(settings.remote_apply_enabled)
+        self.assertFalse(settings.initial_local_publish_enabled)
         self.assertEqual(settings.verify_timeout_seconds, 120)
         self.assertEqual(settings.backup_retention_count, 10)
 
@@ -44,12 +45,14 @@ class ConfigTests(unittest.TestCase):
                 "github_token": "token",
                 "dry_run": False,
                 "remote_apply_enabled": True,
+                "initial_local_publish_enabled": True,
                 "verify_timeout_seconds": 300,
                 "backup_retention_count": 25,
             }
         )
         self.assertFalse(settings.dry_run)
         self.assertTrue(settings.remote_apply_enabled)
+        self.assertTrue(settings.initial_local_publish_enabled)
         self.assertEqual(settings.verify_timeout_seconds, 300)
         self.assertEqual(settings.backup_retention_count, 25)
 

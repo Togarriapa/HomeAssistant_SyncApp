@@ -100,24 +100,12 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
     return True
 
 
-def apply_staged_remote(
+def _execute_staged_apply(
     repository: GitRepository,
     settings: Settings,
     staged: StagingResult,
+    baseline_paths: set[str],
 ) -> tuple[str, ...]:
-    """Apply an already validated remote commit using a recoverable transaction."""
-    drift = detect_live_drift(repository, settings.source_dir)
-    if not drift.clean:
-        raise TransactionError(
-            "live Home Assistant configuration changed since local Git HEAD; "
-            "refusing remote apply: " + ", ".join(drift.changed)
-        )
-
-    head = repository.head()
-    baseline_paths: set[str] = set()
-    if head is not None:
-        baseline_paths = _managed_paths_at_commit(repository, head)
-
     desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(
         settings.staging_dir,
@@ -192,3 +180,49 @@ def apply_staged_remote(
             )
 
     return result.affected_paths
+
+
+def apply_staged_remote(
+    repository: GitRepository,
+    settings: Settings,
+    staged: StagingResult,
+) -> tuple[str, ...]:
+    """Apply an already validated remote commit using a recoverable transaction."""
+    drift = detect_live_drift(repository, settings.source_dir)
+    if not drift.clean:
+        raise TransactionError(
+            "live Home Assistant configuration changed since local Git HEAD; "
+            "refusing remote apply: " + ", ".join(drift.changed)
+        )
+
+    head = repository.head()
+    baseline_paths: set[str] = set()
+    if head is not None:
+        baseline_paths = _managed_paths_at_commit(repository, head)
+
+    return _execute_staged_apply(repository, settings, staged, baseline_paths)
+
+
+def apply_staged_initial_remote(
+    repository: GitRepository,
+    settings: Settings,
+    staged: StagingResult,
+) -> tuple[str, ...]:
+    """Adopt a populated remote as first authority through the full transaction path."""
+    if settings.manifest_path.exists():
+        raise TransactionError(
+            "initial remote bootstrap is only valid before a managed-path baseline exists"
+        )
+
+    head = repository.head()
+    if head != staged.commit:
+        raise TransactionError(
+            "initial remote bootstrap requires the isolated Git HEAD to equal the staged remote commit"
+        )
+
+    # During an explicit remote-authoritative bootstrap, live-vs-HEAD differences
+    # are expected rather than drift. Treat every currently policy-approved live
+    # file as the reversible baseline so remote omissions become journaled deletes
+    # while blocked secret/runtime paths remain completely outside the transaction.
+    baseline_paths = collect_allowed_files(settings.source_dir)
+    return _execute_staged_apply(repository, settings, staged, baseline_paths)

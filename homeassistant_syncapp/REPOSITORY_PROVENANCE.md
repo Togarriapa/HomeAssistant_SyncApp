@@ -19,6 +19,21 @@ Git permits `remote.origin.pushurl` to differ from the fetch URL and permits mor
 
 SyncApp therefore rejects any effective push URL whose repository identity differs from `homeassistant_repository_url`. It never repairs or overwrites an unexpected push URL automatically because doing so would hide persistent-state tampering or operator error.
 
+## Isolated Git execution
+
+Git behavior can also be changed by process environment, global/system Git configuration, credential helpers, URL rewrite rules, and repository hooks. Those mechanisms must not be allowed to silently redirect synchronization or execute arbitrary hook commands from persistent `/data` state.
+
+Every SyncApp Git subprocess therefore:
+
+- removes inherited repository/worktree/index/object-location overrides and Git askpass/SSH/proxy/template overrides;
+- ignores global and system Git configuration;
+- supplies its own command-scope configuration with `core.hooksPath` disabled;
+- clears configured credential helpers;
+- disables terminal prompting;
+- when a GitHub token is configured, injects the authorization header only for the `https://github.com/` URL scope rather than as a global HTTP header.
+
+This matters during the **first clone** as well as later fetch/push operations: an ambient `url.*.insteadOf` rewrite must not get a chance to redirect the configured GitHub URL before provenance validation, and an inherited template or persistent repository hook must not execute during managed Git operations.
+
 ## Branch changes
 
 Changing the configured `branch` on an existing `/data/repository` is also fail-closed. The managed-path manifest and transaction provenance describe the baseline associated with the existing branch; silently checking out another branch would reuse that state against a different Git history.

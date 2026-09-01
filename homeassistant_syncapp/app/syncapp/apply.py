@@ -21,26 +21,6 @@ from .transaction import (
 LOGGER = logging.getLogger(__name__)
 
 
-class _SupervisorAdapter:
-    """Keep transaction orchestration decoupled from Supervisor response wrappers."""
-
-    def __init__(self, client: SupervisorClient):
-        self.client = client
-
-    def create_homeassistant_backup(self, name: str) -> dict:
-        return {"slug": self.client.create_homeassistant_backup(name)}
-
-    def check_core_configuration(self) -> dict:
-        return self.client.check_core_configuration()
-
-    def restart_core(self) -> dict:
-        self.client.restart_core()
-        return {}
-
-    def core_api_root(self) -> dict:
-        return self.client.core_api_health()
-
-
 def recover_interrupted_apply(settings: Settings) -> bool:
     active = FileTransaction.load_active(
         settings.transaction_dir,
@@ -51,10 +31,11 @@ def recover_interrupted_apply(settings: Settings) -> bool:
         return False
 
     LOGGER.error(
-        "Found interrupted remote-apply transaction for %s; rolling back before sync",
+        "Found interrupted remote-apply transaction for %s in state %s; rolling back before sync",
         active.plan.commit,
+        active.state,
     )
-    supervisor = _SupervisorAdapter(SupervisorClient())
+    supervisor = SupervisorClient()
     recover_active_transaction(
         active,
         supervisor,
@@ -86,10 +67,12 @@ def apply_staged_remote(
             if entry.object_type == "blob" and is_allowed_relative(entry.path)
         }
 
+    desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(settings.staging_dir, baseline_paths, staged.commit)
     if not plan.affected_paths:
+        repository.fetch()
         repository.adopt_remote(staged.commit)
-        save_manifest(settings.manifest_path, collect_allowed_files(settings.staging_dir))
+        save_manifest(settings.manifest_path, desired_paths)
         return ()
 
     transaction = FileTransaction.prepare(
@@ -98,7 +81,7 @@ def apply_staged_remote(
         settings.staging_dir,
         plan,
     )
-    supervisor = _SupervisorAdapter(SupervisorClient())
+    supervisor = SupervisorClient()
 
     try:
         result = execute_verified_transaction(
@@ -106,8 +89,11 @@ def apply_staged_remote(
             supervisor,
             health_timeout_seconds=settings.verify_timeout_seconds,
         )
-        repository.adopt_remote(staged.commit)
-        save_manifest(settings.manifest_path, collect_allowed_files(settings.staging_dir))
+        # The backup + restart window can be long. Re-fetch before adopting the
+        # baseline so a remote branch move cannot be mistaken for the verified commit.
+        repository.fetch()
+        repository.adopt_remote(result.commit)
+        save_manifest(settings.manifest_path, desired_paths)
         transaction.complete()
     except Exception as exc:
         active = FileTransaction.load_active(
@@ -126,7 +112,7 @@ def apply_staged_remote(
                 raise TransactionError(
                     f"remote apply failed ({exc}); automatic recovery also failed ({recovery_error})"
                 ) from recovery_error
-        raise
+        raise TransactionError(f"remote apply failed safely: {exc}") from exc
 
     LOGGER.info(
         "Applied and verified remote commit %s (%d affected paths, backup %s)",

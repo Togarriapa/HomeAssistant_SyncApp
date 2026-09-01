@@ -144,7 +144,7 @@ class CanaryTests(unittest.TestCase):
 
     def test_backup_canary_fails_if_created_slug_is_missing_from_inventory(self):
         client = FakeCanaryClient()
-        client.backups = [{"slug": "other", "name": "Other backup"}]
+        client.backups = [{"slug": "other", "name": "Other backup", "type": "partial"}]
 
         with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
@@ -153,16 +153,35 @@ class CanaryTests(unittest.TestCase):
 
     def test_backup_canary_fails_if_inventory_name_does_not_match_request(self):
         client = FakeCanaryClient()
-        client.backups = [{"slug": "backup-slug", "name": "Unexpected backup"}]
+        client.backups = [
+            {"slug": "backup-slug", "name": "Unexpected backup", "type": "partial"}
+        ]
 
         with self.assertRaisesRegex(RuntimeError, "name did not match"):
+            run_canary(client, create_backup=True)  # type: ignore[arg-type]
+
+    def test_backup_canary_fails_if_inventory_type_is_not_partial(self):
+        client = FakeCanaryClient()
+        client.backups = [
+            {"slug": "backup-slug", "name": None, "type": "full"}
+        ]
+        # Match the dynamically generated request name so this test reaches the
+        # type proof rather than failing earlier on the name proof.
+        def inventory_with_requested_name() -> list[dict]:
+            client.calls.append("backup-inventory")
+            return [
+                {"slug": "backup-slug", "name": client.backup_name, "type": "full"}
+            ]
+
+        client.list_backups = inventory_with_requested_name  # type: ignore[method-assign]
+        with self.assertRaisesRegex(RuntimeError, "was not the requested partial backup"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
 
     def test_backup_canary_fails_on_duplicate_slug_inventory_evidence(self):
         client = FakeCanaryClient()
         client.backups = [
-            {"slug": "backup-slug", "name": "one"},
-            {"slug": "backup-slug", "name": "two"},
+            {"slug": "backup-slug", "name": "one", "type": "partial"},
+            {"slug": "backup-slug", "name": "two", "type": "partial"},
         ]
 
         with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):

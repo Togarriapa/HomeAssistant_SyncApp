@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from canary import run_canary, run_filesystem_canary
 
@@ -100,6 +101,42 @@ class CanaryTests(unittest.TestCase):
             self.assertTrue(result["file_fsync"])
             self.assertTrue(result["directory_fsync"])
             self.assertTrue(result["write_probe_cleanup"])
+
+    def test_write_probe_random_name_collision_never_overwrites_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+            (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
+            collision = live / ".syncapp-canary-fixed.tmp"
+            collision.write_text("preserve me\n", encoding="utf-8")
+
+            with mock.patch("canary.secrets.token_hex", return_value="fixed"):
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    run_filesystem_canary(live, write_probe=True)
+
+            self.assertEqual(collision.read_text(encoding="utf-8"), "preserve me\n")
+            self.assertFalse((live / ".syncapp-canary-fixed-replaced.tmp").exists())
+
+    def test_write_probe_replace_failure_cleans_both_owned_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+            (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
+            real_replace = __import__("os").replace
+
+            def fail_canary_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+                if str(src).startswith(".syncapp-canary-"):
+                    raise OSError("injected replace failure")
+                return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+            with mock.patch("canary.secrets.token_hex", return_value="fixed"), mock.patch(
+                "canary.os.replace", side_effect=fail_canary_replace
+            ):
+                with self.assertRaisesRegex(OSError, "injected replace failure"):
+                    run_filesystem_canary(live, write_probe=True)
+
+            leftovers = [path.name for path in live.iterdir() if path.name.startswith(".syncapp-canary-")]
+            self.assertEqual(leftovers, [])
 
     def test_filesystem_probe_rejects_symlink_root(self):
         with tempfile.TemporaryDirectory() as temporary:

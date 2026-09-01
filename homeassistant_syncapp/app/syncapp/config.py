@@ -20,6 +20,7 @@ class Settings:
     dry_run: bool
     remote_apply_enabled: bool
     verify_timeout_seconds: int
+    backup_retention_count: int
     git_user_name: str
     git_user_email: str
     source_dir: Path = Path("/homeassistant")
@@ -53,6 +54,10 @@ class Settings:
         if not 30 <= verify_timeout <= 600:
             raise ValueError("verify_timeout_seconds must be between 30 and 600")
 
+        backup_retention_count = int(raw.get("backup_retention_count", 10))
+        if not 0 <= backup_retention_count <= 100:
+            raise ValueError("backup_retention_count must be between 0 and 100")
+
         token = raw.get("github_token")
         token = str(token).strip() if token else None
         dry_run = bool(raw.get("dry_run", True))
@@ -70,6 +75,7 @@ class Settings:
             dry_run=dry_run,
             remote_apply_enabled=remote_apply_enabled,
             verify_timeout_seconds=verify_timeout,
+            backup_retention_count=backup_retention_count,
             git_user_name=str(raw.get("git_user_name", "HomeAssistant SyncApp")),
             git_user_email=str(raw.get("git_user_email", "homeassistant-syncapp@example.invalid")),
         )

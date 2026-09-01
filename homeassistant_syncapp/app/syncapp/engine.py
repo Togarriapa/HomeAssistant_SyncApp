@@ -9,7 +9,7 @@ from .apply import (
 )
 from .config import Settings
 from .git_repo import GitRepository
-from .mirror import load_manifest, mirror_local_configuration, save_manifest
+from .mirror import ManifestError, load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
 from .staging import (
     StagingValidationError,
@@ -170,12 +170,20 @@ class SyncEngine:
             )
             return
 
-        previous_managed = load_manifest(self.settings.manifest_path)
-        current_managed = mirror_local_configuration(
-            self.settings.source_dir,
-            self.settings.repository_dir,
-            previous_managed,
-        )
+        try:
+            previous_managed = load_manifest(self.settings.manifest_path)
+            current_managed = mirror_local_configuration(
+                self.settings.source_dir,
+                self.settings.repository_dir,
+                previous_managed,
+            )
+        except ManifestError as exc:
+            LOGGER.error(
+                "Managed-path manifest integrity check failed; refusing local synchronization: %s",
+                exc,
+            )
+            return
+
         self.repository.add_all()
         changed = self.repository.staged_paths()
 
@@ -193,7 +201,11 @@ class SyncEngine:
             return
 
         if not changed:
-            save_manifest(self.settings.manifest_path, current_managed)
+            try:
+                save_manifest(self.settings.manifest_path, current_managed)
+            except ManifestError as exc:
+                LOGGER.error("Refusing to persist an unsafe managed-path manifest: %s", exc)
+                return
             LOGGER.info("No relevant local configuration changes detected")
             return
 
@@ -223,5 +235,12 @@ class SyncEngine:
 
         commit = self.repository.commit("chore(homeassistant): sync local configuration")
         self.repository.push()
-        save_manifest(self.settings.manifest_path, current_managed)
+        try:
+            save_manifest(self.settings.manifest_path, current_managed)
+        except ManifestError as exc:
+            LOGGER.error(
+                "Git push succeeded, but managed-path manifest persistence failed integrity validation: %s",
+                exc,
+            )
+            return
         LOGGER.info("Pushed local Home Assistant configuration commit %s", commit)

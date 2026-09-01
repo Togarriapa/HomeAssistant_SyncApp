@@ -204,6 +204,23 @@ class FileTransaction:
     def mark(self, state: str) -> None:
         self._write_journal(state)
 
+    def assert_live_unchanged(self) -> None:
+        """Prove affected live targets still match the snapshot taken at prepare()."""
+        for relative in self.plan.affected_paths:
+            target = _assert_safe_live_path(self.source_dir, relative)
+            if relative in self.existed:
+                snapshot = self.snapshot_dir / relative
+                if not snapshot.is_file():
+                    raise TransactionError(f"snapshot missing for {relative}")
+                if not target.is_file() or target.read_bytes() != snapshot.read_bytes():
+                    raise TransactionError(
+                        f"live configuration changed during transaction preparation: {relative}"
+                    )
+            elif target.exists():
+                raise TransactionError(
+                    f"live configuration created during transaction preparation: {relative}"
+                )
+
     def apply(self) -> None:
         if self.state not in {"backed_up", "prepared"}:
             raise TransactionError(f"transaction cannot apply from state {self.state}")
@@ -304,10 +321,18 @@ def execute_verified_transaction(
         )
         transaction.record_supervisor_backup(slug)
     except Exception as exc:
-        # No live target has been modified before the transaction reaches apply().
-        # Discarding preparation state avoids rewriting otherwise unchanged files.
         transaction.discard()
         raise TransactionError(f"pre-apply Supervisor backup failed: {exc}") from exc
+
+    try:
+        transaction.assert_live_unchanged()
+    except Exception as exc:
+        # No SyncApp live mutation has happened yet. Preserve any concurrent local
+        # edit and discard only our snapshot/journal.
+        transaction.discard()
+        raise TransactionError(
+            f"live configuration changed while backup was running; remote apply aborted without mutation: {exc}"
+        ) from exc
 
     restart_requested = False
     try:

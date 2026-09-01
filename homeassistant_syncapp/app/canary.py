@@ -9,6 +9,7 @@ import secrets
 import stat
 
 from syncapp.live_fs import LiveFilesystem, LiveFilesystemError
+from syncapp.policy import collect_allowed_files
 from syncapp.supervisor import SupervisorClient
 
 
@@ -90,6 +91,42 @@ def _verify_created_backup(
         if field in backup:
             evidence[field] = backup[field]
     return evidence
+
+
+def _allowed_live_snapshot(root: Path) -> dict[str, str]:
+    """Hash the complete policy-approved live tree without exposing hashes."""
+    if root.is_symlink():
+        raise RuntimeError("live configuration root must not be a symlink")
+    filesystem = LiveFilesystem(root)
+    return {
+        relative: filesystem.sha256(relative)
+        for relative in sorted(collect_allowed_files(root))
+    }
+
+
+def _verify_live_snapshot_unchanged(
+    before: dict[str, str],
+    after: dict[str, str],
+) -> dict[str, object]:
+    before_paths = set(before)
+    after_paths = set(after)
+    added = after_paths - before_paths
+    removed = before_paths - after_paths
+    changed = {
+        path
+        for path in before_paths & after_paths
+        if before[path] != after[path]
+    }
+    if added or removed or changed:
+        raise RuntimeError(
+            "canary changed policy-approved live configuration or concurrent drift occurred: "
+            f"added={len(added)}, removed={len(removed)}, changed={len(changed)}"
+        )
+    return {
+        "policy_approved_files": len(before),
+        "path_set_unchanged": True,
+        "content_unchanged": True,
+    }
 
 
 def _canary_temp_names(root_fd: int) -> tuple[str, ...]:
@@ -292,13 +329,20 @@ def run_canary(
             "refusing canary Core restart without a fresh inventory-verified backup"
         )
 
+    prove_live_invariance = filesystem or filesystem_write_probe
+    live_before = (
+        _allowed_live_snapshot(filesystem_root)
+        if prove_live_invariance
+        else None
+    )
+
     result: dict[str, object] = {
         "environment": _environment_evidence(client),
         "core_api": client.core_api_health(),
         "configuration_check": client.check_core_configuration(),
     }
 
-    if filesystem or filesystem_write_probe:
+    if prove_live_invariance:
         result["filesystem"] = run_filesystem_canary(
             filesystem_root,
             probe_path=filesystem_path,
@@ -318,6 +362,18 @@ def run_canary(
     if restart:
         client.restart_core()
         result["post_restart_core_api"] = client.wait_for_core_api(timeout_seconds)
+
+    if live_before is not None:
+        try:
+            live_after = _allowed_live_snapshot(filesystem_root)
+            result["live_configuration_invariance"] = _verify_live_snapshot_unchanged(
+                live_before,
+                live_after,
+            )
+        except LiveFilesystemError as exc:
+            raise RuntimeError(
+                f"live configuration invariance proof failed: {exc}"
+            ) from exc
 
     return result
 

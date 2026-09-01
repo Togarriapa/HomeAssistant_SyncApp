@@ -18,6 +18,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.dry_run)
         self.assertFalse(settings.remote_apply_enabled)
         self.assertEqual(settings.verify_timeout_seconds, 120)
+        self.assertEqual(settings.backup_retention_count, 10)
 
     def test_rejects_non_github_repository(self) -> None:
         with self.assertRaisesRegex(ValueError, "github.com"):
@@ -44,11 +45,13 @@ class ConfigTests(unittest.TestCase):
                 "dry_run": False,
                 "remote_apply_enabled": True,
                 "verify_timeout_seconds": 300,
+                "backup_retention_count": 25,
             }
         )
         self.assertFalse(settings.dry_run)
         self.assertTrue(settings.remote_apply_enabled)
         self.assertEqual(settings.verify_timeout_seconds, 300)
+        self.assertEqual(settings.backup_retention_count, 25)
 
     def test_verify_timeout_bounds_are_enforced(self) -> None:
         with self.assertRaisesRegex(ValueError, "between 30 and 600"):
@@ -58,6 +61,22 @@ class ConfigTests(unittest.TestCase):
                     "verify_timeout_seconds": 601,
                 }
             )
+
+    def test_backup_retention_bounds_are_enforced(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+            self._load(
+                {
+                    "repository_url": "https://github.com/example/config.git",
+                    "backup_retention_count": 101,
+                }
+            )
+        settings = self._load(
+            {
+                "repository_url": "https://github.com/example/config.git",
+                "backup_retention_count": 0,
+            }
+        )
+        self.assertEqual(settings.backup_retention_count, 0)
 
 
 if __name__ == "__main__":

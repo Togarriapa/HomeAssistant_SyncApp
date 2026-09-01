@@ -26,6 +26,17 @@ class GitTreeEntry:
     path: str
 
 
+def _remote_identity(value: str) -> tuple[str, str]:
+    """Return a comparison identity without changing the remote used by Git."""
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and (parsed.hostname or "").lower() in _GITHUB_HOSTS:
+        path = parsed.path.strip("/")
+        if path.lower().endswith(".git"):
+            path = path[:-4]
+        return "github.com", path.lower()
+    return "literal", value
+
+
 class GitRepository:
     def __init__(
         self,
@@ -93,7 +104,8 @@ class GitRepository:
         return process
 
     def ensure(self) -> None:
-        if not (self.path / ".git").exists():
+        existing_repository = (self.path / ".git").exists()
+        if not existing_repository:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if self.path.exists():
                 for child in self.path.iterdir():
@@ -112,10 +124,23 @@ class GitRepository:
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip()
                 raise GitError(f"git clone failed: {detail}")
+        else:
+            existing_remote_result = self._run(
+                "remote", "get-url", "origin", check=False
+            )
+            if existing_remote_result.returncode != 0:
+                raise GitError(
+                    "existing managed repository has no readable origin; refusing implicit reconfiguration"
+                )
+            existing_remote = existing_remote_result.stdout.strip()
+            if _remote_identity(existing_remote) != _remote_identity(self.remote_url):
+                raise GitError(
+                    "configured managed repository differs from the repository already stored under /data; "
+                    "refusing implicit retargeting because Git history and managed-path state belong to the existing target"
+                )
 
         self._run("config", "user.name", self.user_name)
         self._run("config", "user.email", self.user_email)
-        self._run("remote", "set-url", "origin", self.remote_url)
         self.fetch()
 
         remote_ref = f"refs/remotes/origin/{self.branch}"

@@ -1,6 +1,19 @@
 # HomeAssistant SyncApp
 
-A Home Assistant OS app that safely synchronizes Home Assistant configuration with a designated GitHub repository.
+A Home Assistant OS app that safely synchronizes Home Assistant configuration with a separately configured GitHub repository.
+
+## Repository separation
+
+SyncApp deliberately has two different repository roles:
+
+1. **SyncApp source repository** — `Togarriapa/HomeAssistant_SyncApp`. This contains the add-on implementation, tests, CI, and documentation. Home Assistant's add-on metadata points here as the project/source URL.
+2. **Managed Home Assistant repository** — configured with `homeassistant_repository_url`. This is the repository SyncApp clones under `/data/repository` and reads/writes for Home Assistant configuration synchronization.
+
+For example, the app may be installed from `Togarriapa/HomeAssistant_SyncApp` while `homeassistant_repository_url` is `https://github.com/example/my-home-assistant-config.git`.
+
+SyncApp rejects using its own source repository as the managed Home Assistant target. The old `repository_url` setting is accepted only as a deprecated upgrade alias; when both old and new values are present they must identify the same GitHub repository or startup fails closed.
+
+An existing `/data/repository` is also bound to its original `origin`. Changing `homeassistant_repository_url` does **not** silently repoint that clone, because its Git history and `/data` managed-state artifacts belong to the original target. SyncApp fails closed on a target mismatch; repository migration/reinitialization must be an explicit operation rather than an implicit side effect of changing an option.
 
 ## Design goal
 
@@ -14,9 +27,11 @@ Remote Git data is staged outside `/homeassistant`, validated, and—only when e
 
 A fresh SyncApp instance connected to an already-populated configuration repository fails closed until initial authority is selected explicitly. See `homeassistant_syncapp/BOOTSTRAP.md` for the local-authoritative and remote-authoritative first-sync contracts. Remote-authoritative bootstrap uses the same staged, backed-up, verified transaction machinery; it does not disable ordinary drift protection globally.
 
-Local changes are filtered before they are committed so secrets, databases, logs, caches, generated files, private-key material, and runtime state are not pushed accidentally. The same blocked-file policy is enforced for remote application and first-run bootstrap.
+Local changes are filtered before they are committed to the configured managed Home Assistant repository so secrets, databases, logs, caches, generated files, private-key material, and runtime state are not pushed accidentally. The same blocked-file policy is enforced for remote application and first-run bootstrap.
 
 The persisted managed-path manifest under `/data` is treated as safety-critical state, not a best-effort cache. If it is malformed, has the wrong JSON shape, or names a blocked/absolute/traversal path, synchronization fails closed before local mirroring. Managed paths are revalidated immediately before deletion so damaged state cannot turn the isolated repository cleanup path into a filesystem traversal.
+
+After a remote configuration has passed Core health verification and the exact commit has been adopted in the isolated managed repository, later bookkeeping failures preserve the verified live state and recovery journal. SyncApp proves Git/live consistency on the next cycle before finalizing; it does not roll live files behind an already-adopted Git baseline.
 
 Remote live application is disabled by default: `dry_run` defaults to `true` and `remote_apply_enabled` defaults to `false`. Both first-sync authority flags also default to `false`.
 

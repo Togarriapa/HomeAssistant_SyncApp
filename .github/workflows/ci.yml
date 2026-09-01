@@ -45,13 +45,24 @@ jobs:
           from pathlib import Path
           import yaml
 
+          source_repository = "https://github.com/Togarriapa/HomeAssistant_SyncApp"
           repository = yaml.safe_load(Path("repository.yaml").read_text())
           app = yaml.safe_load(Path("homeassistant_syncapp/config.yaml").read_text())
 
-          assert repository["url"] == "https://github.com/Togarriapa/HomeAssistant_SyncApp"
+          assert repository["url"] == source_repository
+          assert app["url"] == source_repository
           for key in ("name", "version", "slug", "description", "arch"):
               assert key in app, f"missing required app key: {key}"
           assert set(app["arch"]) == {"aarch64", "amd64"}
+
+          assert "homeassistant_repository_url" in app["options"]
+          assert app["options"]["homeassistant_repository_url"] is None
+          assert "homeassistant_repository_url" in app["schema"]
+          assert "repository_url" not in app["options"], (
+              "deprecated repository_url must not be presented as the default target option"
+          )
+          assert app["options"]["initial_local_publish_enabled"] is False
+          assert app["options"]["initial_remote_apply_enabled"] is False
           PY
 
   docker-build:

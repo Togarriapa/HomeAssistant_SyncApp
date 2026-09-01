@@ -19,9 +19,9 @@ class FakeSupervisor:
         self.restarts = 0
         self.health_checks = 0
 
-    def create_homeassistant_backup(self, name: str) -> dict:
+    def create_homeassistant_backup(self, name: str) -> str:
         self.backups += 1
-        return {"slug": "backup-123"}
+        return "backup-123"
 
     def check_core_configuration(self) -> dict:
         self.checks += 1
@@ -30,11 +30,10 @@ class FakeSupervisor:
             raise RuntimeError("invalid configuration")
         return {}
 
-    def restart_core(self) -> dict:
+    def restart_core(self) -> None:
         self.restarts += 1
-        return {}
 
-    def core_api_root(self) -> dict:
+    def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict:
         self.health_checks += 1
         return {"message": "API running."}
 
@@ -71,12 +70,13 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(supervisor.backups, 1)
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 1)
+            self.assertEqual(supervisor.health_checks, 1)
             self.assertTrue(tx_root.exists())
 
             tx.complete()
             self.assertFalse(tx_root.exists())
 
-    def test_failed_configuration_check_rolls_back_and_verifies_old_config(self):
+    def test_failed_configuration_check_restores_without_restarting_running_core(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             live, staging, tx_root = self._dirs(root)
@@ -87,14 +87,15 @@ class TransactionTests(unittest.TestCase):
             tx = FileTransaction.prepare(tx_root, live, staging, plan)
             supervisor = FakeSupervisor(fail_check=True)
 
-            with self.assertRaisesRegex(TransactionError, "rolled back"):
+            with self.assertRaisesRegex(TransactionError, "restored"):
                 execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
 
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
-            self.assertEqual(supervisor.checks, 2)
-            self.assertEqual(supervisor.restarts, 1)
+            self.assertEqual(supervisor.checks, 1)
+            self.assertEqual(supervisor.restarts, 0)
+            self.assertEqual(supervisor.health_checks, 0)
 
     def test_interrupted_applied_transaction_is_recovered(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -117,6 +118,7 @@ class TransactionTests(unittest.TestCase):
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 1)
+            self.assertEqual(supervisor.health_checks, 1)
 
     def test_symlinked_live_parent_is_rejected_before_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:

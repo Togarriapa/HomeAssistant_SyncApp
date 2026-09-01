@@ -4,6 +4,7 @@ import json
 import os
 import time
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
@@ -95,6 +96,22 @@ class SupervisorClient:
         if not isinstance(slug, str) or not slug:
             raise SupervisorError("Supervisor backup response did not include a slug")
         return slug
+
+    def list_backups(self) -> list[dict]:
+        data = self._unwrap(self._request("GET", "/backups"), "backup inventory")
+        backups = data.get("backups", [])
+        if not isinstance(backups, list) or not all(isinstance(item, dict) for item in backups):
+            raise SupervisorError("Supervisor backup inventory returned unexpected data")
+        return list(backups)
+
+    def delete_backup(self, slug: str) -> None:
+        if not slug or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in slug):
+            raise SupervisorError("refusing invalid backup slug")
+        encoded = quote(slug, safe="")
+        self._unwrap(
+            self._request("DELETE", f"/backups/{encoded}"),
+            f"backup deletion {slug}",
+        )
 
     def restart_core(self) -> None:
         self._unwrap(self._request("POST", "/core/restart", {}), "Core restart")

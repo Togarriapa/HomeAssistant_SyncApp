@@ -45,11 +45,6 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
             "recovery evidence is preserved and automatic rollback is blocked"
         )
 
-    # A crash can happen after Core was verified and adopt_remote() advanced the
-    # isolated Git HEAD, but before manifest/journal cleanup finished. Once Git has
-    # adopted the verified commit, automatically rolling back live files would move
-    # the live tree behind the repository baseline. Prove both Git HEAD and the live
-    # managed files still match before finalizing bookkeeping.
     if active.state == "verified":
         try:
             adopted = repository.head() == active.plan.commit
@@ -105,6 +100,8 @@ def _execute_staged_apply(
     settings: Settings,
     staged: StagingResult,
     baseline_paths: set[str],
+    *,
+    verify_noop: bool = False,
 ) -> tuple[str, ...]:
     desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(
@@ -114,9 +111,14 @@ def _execute_staged_apply(
         live_dir=settings.source_dir,
     )
     if not plan.affected_paths:
-        repository.fetch()
-        repository.adopt_remote(staged.commit)
-        save_manifest(settings.manifest_path, desired_paths)
+        try:
+            if verify_noop:
+                SupervisorClient().check_core_configuration()
+            repository.fetch()
+            repository.adopt_remote(staged.commit)
+            save_manifest(settings.manifest_path, desired_paths)
+        except Exception as exc:
+            raise TransactionError(f"remote no-op adoption failed safely: {exc}") from exc
         return ()
 
     supervisor = SupervisorClient()
@@ -163,8 +165,6 @@ def _execute_staged_apply(
         result.backup_slug,
     )
 
-    # Retention is post-commit hygiene only. It must never turn a verified apply
-    # into a rollback or remove the backup created for the just-completed apply.
     if settings.backup_retention_count > 0:
         try:
             deleted = prune_syncapp_backups(
@@ -220,9 +220,11 @@ def apply_staged_initial_remote(
             "initial remote bootstrap requires the isolated Git HEAD to equal the staged remote commit"
         )
 
-    # During an explicit remote-authoritative bootstrap, live-vs-HEAD differences
-    # are expected rather than drift. Treat every currently policy-approved live
-    # file as the reversible baseline so remote omissions become journaled deletes
-    # while blocked secret/runtime paths remain completely outside the transaction.
     baseline_paths = collect_allowed_files(settings.source_dir)
-    return _execute_staged_apply(repository, settings, staged, baseline_paths)
+    return _execute_staged_apply(
+        repository,
+        settings,
+        staged,
+        baseline_paths,
+        verify_noop=True,
+    )

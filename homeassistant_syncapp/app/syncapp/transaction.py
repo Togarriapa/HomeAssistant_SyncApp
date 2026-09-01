@@ -39,12 +39,32 @@ class TransactionResult:
     affected_paths: tuple[str, ...]
 
 
-def build_apply_plan(staging_dir: Path, baseline_paths: Iterable[str], commit: str) -> ApplyPlan:
+def build_apply_plan(
+    staging_dir: Path,
+    baseline_paths: Iterable[str],
+    commit: str,
+    *,
+    live_dir: Path | None = None,
+) -> ApplyPlan:
+    """Build the smallest safe file plan for an already drift-checked live tree."""
     desired = collect_allowed_files(staging_dir)
     baseline = {path for path in baseline_paths if is_allowed_relative(path)}
+    write_paths: list[str] = []
+
+    for relative in sorted(desired):
+        if live_dir is None:
+            write_paths.append(relative)
+            continue
+        live = live_dir / relative
+        staged = staging_dir / relative
+        if live.is_symlink() or (live.exists() and not live.is_file()):
+            raise TransactionError(f"live target is not a regular file: {relative}")
+        if not live.exists() or live.read_bytes() != staged.read_bytes():
+            write_paths.append(relative)
+
     return ApplyPlan(
         commit=commit,
-        write_paths=tuple(sorted(desired)),
+        write_paths=tuple(write_paths),
         delete_paths=tuple(sorted(baseline - desired)),
     )
 
@@ -97,8 +117,6 @@ class FileTransaction:
         if root.exists():
             raise TransactionError("an unresolved transaction already exists")
 
-        # Inspect the entire live target set before creating transaction state.
-        # This records which files existed before any snapshot work begins.
         existed: set[str] = set()
         for relative in plan.affected_paths:
             target = _assert_safe_live_path(source_dir, relative)
@@ -111,8 +129,6 @@ class FileTransaction:
         tx = cls(root, source_dir, staging_dir, plan)
         tx.existed = existed
         try:
-            # Journal before snapshot copying so a crash during preparation is
-            # recognizable. No live file is ever modified in this state.
             tx._write_journal("preparing")
             tx.snapshot_dir.mkdir()
             for relative in sorted(existed):
@@ -134,8 +150,6 @@ class FileTransaction:
         if not journal.exists():
             if not root.exists():
                 return None
-            # An empty directory can only be left in the tiny interval between
-            # mkdir and the first journal write; no live mutation has happened.
             try:
                 if not any(root.iterdir()):
                     root.rmdir()
@@ -261,7 +275,6 @@ def recover_active_transaction(
 ) -> None:
     """Fail closed after interruption, restoring Core only if live mutation began."""
     if transaction.state in {"preparing", "prepared", "backed_up"}:
-        # No live target is modified before the 'applying' state is written.
         transaction.discard()
         return
 

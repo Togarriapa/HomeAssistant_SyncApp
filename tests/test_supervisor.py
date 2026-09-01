@@ -75,53 +75,85 @@ class SupervisorClientTests(unittest.TestCase):
             client.backup_info("../other")
         self.assertEqual(client.calls, [])
 
-    def test_verify_homeassistant_backup_cross_checks_inventory_and_details(self) -> None:
+    def _verified_backup_client(
+        self,
+        *,
+        inventory_size: object = 12.5,
+        detail_size: object = "12.50",
+    ) -> tuple[RecordingSupervisorClient, str]:
         name = "SyncApp pre-apply abcdef123456"
-        client = RecordingSupervisorClient(
-            [
-                {
-                    "result": "ok",
-                    "data": {
-                        "backups": [
-                            {
-                                "slug": "backup-123",
-                                "name": name,
-                                "type": "partial",
-                                "date": "2026-09-01T22:00:00+00:00",
-                                "protected": False,
-                                "content": {"homeassistant": True},
-                            }
-                        ]
+        return (
+            RecordingSupervisorClient(
+                [
+                    {
+                        "result": "ok",
+                        "data": {
+                            "backups": [
+                                {
+                                    "slug": "backup-123",
+                                    "name": name,
+                                    "type": "partial",
+                                    "date": "2026-09-01T22:00:00+00:00",
+                                    "protected": False,
+                                    "size": inventory_size,
+                                    "content": {"homeassistant": True},
+                                }
+                            ]
+                        },
                     },
-                },
-                {
-                    "result": "ok",
-                    "data": {
-                        "slug": "backup-123",
-                        "name": name,
-                        "type": "partial",
-                        "homeassistant": "2026.9.0",
-                        "homeassistant_exclude_database": True,
+                    {
+                        "result": "ok",
+                        "data": {
+                            "slug": "backup-123",
+                            "name": name,
+                            "type": "partial",
+                            "size": detail_size,
+                            "homeassistant": "2026.9.0",
+                            "homeassistant_exclude_database": True,
+                        },
                     },
-                },
-            ]
+                ]
+            ),
+            name,
         )
+
+    def test_verify_homeassistant_backup_cross_checks_inventory_and_details(self) -> None:
+        client, name = self._verified_backup_client()
 
         evidence = client.verify_homeassistant_backup("backup-123", name)
 
-        self.assertEqual(
-            client.calls[0][:2],
-            ("GET", "/backups"),
-        )
-        self.assertEqual(
-            client.calls[1][:2],
-            ("GET", "/backups/backup-123/info"),
-        )
+        self.assertEqual(client.calls[0][:2], ("GET", "/backups"))
+        self.assertEqual(client.calls[1][:2], ("GET", "/backups/backup-123/info"))
         self.assertTrue(evidence["inventory_verified"])
         self.assertTrue(evidence["detail_verified"])
         self.assertTrue(evidence["homeassistant_content_verified"])
         self.assertTrue(evidence["homeassistant_database_excluded"])
+        self.assertTrue(evidence["backup_size_verified"])
+        self.assertEqual(evidence["backup_size_mb"], "12.50")
         self.assertEqual(evidence["homeassistant_version"], "2026.9.0")
+
+    def test_verify_homeassistant_backup_rejects_zero_inventory_size(self) -> None:
+        client, name = self._verified_backup_client(inventory_size=0)
+        with self.assertRaisesRegex(SupervisorError, "inventory.*non-zero size"):
+            client.verify_homeassistant_backup("backup-123", name)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_verify_homeassistant_backup_rejects_zero_detail_size(self) -> None:
+        client, name = self._verified_backup_client(detail_size="0")
+        with self.assertRaisesRegex(SupervisorError, "details.*non-zero size"):
+            client.verify_homeassistant_backup("backup-123", name)
+
+    def test_verify_homeassistant_backup_rejects_invalid_or_boolean_size(self) -> None:
+        for invalid in (True, "not-a-number", "NaN", "Infinity"):
+            with self.subTest(invalid=invalid):
+                client, name = self._verified_backup_client(inventory_size=invalid)
+                with self.assertRaisesRegex(SupervisorError, "valid backup size|non-zero size"):
+                    client.verify_homeassistant_backup("backup-123", name)
+
+    def test_verify_homeassistant_backup_rejects_inventory_detail_size_mismatch(self) -> None:
+        client, name = self._verified_backup_client(inventory_size=12.5, detail_size="12.51")
+        with self.assertRaisesRegex(SupervisorError, "inventory/detail size did not match"):
+            client.verify_homeassistant_backup("backup-123", name)
 
     def test_verify_homeassistant_backup_rejects_missing_homeassistant_content(self) -> None:
         name = "SyncApp pre-apply abcdef123456"
@@ -135,6 +167,7 @@ class SupervisorClientTests(unittest.TestCase):
                                 "slug": "backup-123",
                                 "name": name,
                                 "type": "partial",
+                                "size": 12.5,
                                 "content": {"homeassistant": False},
                             }
                         ]
@@ -160,6 +193,7 @@ class SupervisorClientTests(unittest.TestCase):
                                 "slug": "backup-123",
                                 "name": name,
                                 "type": "partial",
+                                "size": 12.5,
                                 "content": {"homeassistant": True},
                             }
                         ]
@@ -171,6 +205,7 @@ class SupervisorClientTests(unittest.TestCase):
                         "slug": "backup-123",
                         "name": name,
                         "type": "partial",
+                        "size": "12.5",
                         "homeassistant": "2026.9.0",
                         "homeassistant_exclude_database": False,
                     },

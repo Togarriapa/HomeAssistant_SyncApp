@@ -2,13 +2,19 @@
 
 SyncApp's repository tests cannot prove the behavior of the real Home Assistant OS `/homeassistant` mount or Supervisor. Run these probes only on a disposable/canary Home Assistant OS installation before enabling automatic remote apply on an important instance.
 
+## Evidence handling
+
+Every canary invocation records a deliberately small `environment` object before the health/configuration checks. It contains only the installed Core version/architecture/machine/image, Supervisor version/architecture, and host operating-system/kernel/agent/deployment/virtualization fields needed to make issue #4 results reproducible. The helper intentionally does **not** include hostnames, network addresses, disk inventory, the Supervisor token, or the `version_latest` advisory fields.
+
+Save the JSON output from each level together with the exact SyncApp commit being tested. Do not treat output from one HAOS/Core/Supervisor version combination as proof for a materially different runtime without rerunning the canary.
+
 ## 1. Non-mutating Supervisor probe
 
 ```sh
 python3 /app/canary.py
 ```
 
-This checks Core info, the Supervisor Core API proxy, and Supervisor `/core/check`. It does not modify Home Assistant configuration files.
+This records the redacted runtime fingerprint, checks the Supervisor Core API proxy, and runs Supervisor `/core/check`. It does not modify Home Assistant configuration files.
 
 ## 2. Read-only live-filesystem probe
 
@@ -34,9 +40,11 @@ Only on the disposable canary:
 python3 /app/canary.py --filesystem --filesystem-write-probe
 ```
 
-This does **not** edit a Home Assistant configuration file. It creates two random `.syncapp-canary-*.tmp` files directly under `/homeassistant` using `O_EXCL|O_NOFOLLOW`, so both source and destination names are proven to belong to that canary invocation before replacement. It fsyncs the source, descriptor-relatively replaces the reserved destination with the source, verifies the bytes through `O_NOFOLLOW`, unlinks the destination with `dir_fd`, and fsyncs the directory. `*.tmp` is already blocked by SyncApp's synchronization policy.
+This does **not** edit a Home Assistant configuration file. Before creating anything, it descriptor-relatively scans the opened live root for prior `.syncapp-canary-*.tmp` evidence. If any matching file exists, the write probe refuses to run and leaves that evidence untouched for operator inspection.
 
-The probe attempts cleanup on every exit path, including replacement failure. If cleanup itself fails, the command fails loudly and identifies the `.syncapp-canary-*.tmp` pattern for operator inspection. Do not enable remote apply until the reason is understood and any residual probe file is removed. A random-name collision also fails closed; the canary never intentionally replaces an unowned path.
+With a clean preflight, the probe creates two random `.syncapp-canary-*.tmp` files directly under `/homeassistant` using `O_EXCL|O_NOFOLLOW`, so both source and destination names are proven to belong to that canary invocation before replacement. It fsyncs the source, descriptor-relatively replaces the reserved destination with the source, verifies the bytes through `O_NOFOLLOW`, unlinks the destination with `dir_fd`, and fsyncs the directory. `*.tmp` is already blocked by SyncApp's synchronization policy.
+
+The probe attempts cleanup on every exit path, including replacement failure, then scans for matching leftovers again before reporting success. A successful result contains `stale_probe_files_before: 0` and `stale_probe_files_after: 0`. If cleanup itself fails or matching evidence remains, the command fails loudly. Do not enable remote apply until the reason is understood and residual probe evidence is resolved. A random-name collision also fails closed; the canary never intentionally replaces an unowned path.
 
 ## 4. Supervisor backup and restart probes
 
@@ -47,7 +55,7 @@ python3 /app/canary.py --filesystem --backup
 python3 /app/canary.py --filesystem --backup --restart --timeout 120
 ```
 
-The backup call creates a synchronous partial Home Assistant backup. The restart variant explicitly restarts Core and waits for the API to become healthy.
+The backup call creates a synchronous partial Home Assistant backup. The restart variant explicitly restarts Core and waits for the API to become healthy. Retain the reported backup slug with the canary evidence.
 
 ## 5. Full transaction canary
 

@@ -83,6 +83,37 @@ class LiveFilesystemTests(unittest.TestCase):
             fs.replace_from("configuration.yaml", source, digest)
             self.assertEqual((live / "configuration.yaml").read_text(), "new: true\n")
 
+    def test_parent_pathname_swap_cannot_redirect_descriptor_relative_replace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live = root / "live"
+            outside = root / "outside"
+            source = root / "source.yaml"
+            live.mkdir()
+            outside.mkdir()
+            packages = live / "packages"
+            packages.mkdir()
+            moved = live / "packages-opened"
+            source.write_text("new: true\n", encoding="utf-8")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            real_replace = os.replace
+            swapped = False
+
+            def swap_parent_then_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+                nonlocal swapped
+                if not swapped:
+                    packages.rename(moved)
+                    packages.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+            with mock.patch("syncapp.live_fs.os.replace", side_effect=swap_parent_then_replace):
+                LiveFilesystem(live).replace_from("packages/configuration.yaml", source, digest)
+
+            self.assertTrue(packages.is_symlink())
+            self.assertEqual((moved / "configuration.yaml").read_text(), "new: true\n")
+            self.assertFalse((outside / "configuration.yaml").exists())
+
     def test_replace_and_delete_use_parent_dir_fd(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

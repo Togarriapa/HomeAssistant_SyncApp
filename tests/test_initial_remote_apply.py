@@ -55,7 +55,58 @@ class InitialRemoteApplyTests(unittest.TestCase):
                 settings,
                 staged,
                 {"configuration.yaml", "automations.yaml"},
+                verify_noop=True,
             )
+
+    def test_noop_bootstrap_requires_supervisor_semantic_validation_before_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = self._settings(root)
+            settings.source_dir.mkdir(parents=True)
+            settings.staging_dir.mkdir(parents=True)
+            content = "homeassistant:\n"
+            (settings.source_dir / "configuration.yaml").write_text(content, encoding="utf-8")
+            (settings.staging_dir / "configuration.yaml").write_text(content, encoding="utf-8")
+
+            commit = "c" * 40
+            staged = StagingResult(commit=commit, file_count=1, total_bytes=len(content))
+            repository = MagicMock()
+            repository.head.return_value = commit
+            supervisor = MagicMock()
+            supervisor.check_core_configuration.return_value = {}
+
+            with patch("syncapp.apply.SupervisorClient", return_value=supervisor):
+                affected = apply_staged_initial_remote(repository, settings, staged)
+
+            self.assertEqual(affected, ())
+            supervisor.check_core_configuration.assert_called_once_with()
+            repository.fetch.assert_called_once_with()
+            repository.adopt_remote.assert_called_once_with(commit)
+            self.assertTrue(settings.manifest_path.exists())
+
+    def test_noop_bootstrap_does_not_establish_baseline_when_semantic_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = self._settings(root)
+            settings.source_dir.mkdir(parents=True)
+            settings.staging_dir.mkdir(parents=True)
+            content = "homeassistant:\n"
+            (settings.source_dir / "configuration.yaml").write_text(content, encoding="utf-8")
+            (settings.staging_dir / "configuration.yaml").write_text(content, encoding="utf-8")
+
+            commit = "d" * 40
+            staged = StagingResult(commit=commit, file_count=1, total_bytes=len(content))
+            repository = MagicMock()
+            repository.head.return_value = commit
+            supervisor = MagicMock()
+            supervisor.check_core_configuration.side_effect = RuntimeError("invalid configuration")
+
+            with patch("syncapp.apply.SupervisorClient", return_value=supervisor):
+                with self.assertRaisesRegex(TransactionError, "no-op adoption failed safely"):
+                    apply_staged_initial_remote(repository, settings, staged)
+
+            repository.adopt_remote.assert_not_called()
+            self.assertFalse(settings.manifest_path.exists())
 
     def test_bootstrap_refuses_when_managed_baseline_already_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

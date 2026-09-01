@@ -53,6 +53,28 @@ class SupervisorClientTests(unittest.TestCase):
         self.assertEqual(client.list_backups(), backups)
         self.assertEqual(client.calls[0][:2], ("GET", "/backups"))
 
+    def test_backup_info_uses_specific_slug_endpoint(self) -> None:
+        details = {
+            "slug": "safe_slug-123",
+            "type": "partial",
+            "homeassistant": "2026.9.0",
+            "homeassistant_exclude_database": True,
+        }
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": details}]
+        )
+        self.assertEqual(client.backup_info("safe_slug-123"), details)
+        self.assertEqual(
+            client.calls[0][:2],
+            ("GET", "/backups/safe_slug-123/info"),
+        )
+
+    def test_backup_info_rejects_untrusted_slug_characters(self) -> None:
+        client = RecordingSupervisorClient([])
+        with self.assertRaisesRegex(SupervisorError, "invalid backup slug"):
+            client.backup_info("../other")
+        self.assertEqual(client.calls, [])
+
     def test_backup_delete_uses_specific_slug_endpoint(self) -> None:
         client = RecordingSupervisorClient([{"result": "ok", "data": {}}])
         client.delete_backup("safe_slug-123")

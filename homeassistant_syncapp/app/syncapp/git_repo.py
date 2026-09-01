@@ -212,3 +212,12 @@ class GitRepository:
 
     def push(self) -> None:
         self._run("push", "-u", "origin", f"HEAD:refs/heads/{self.branch}")
+
+    def adopt_remote(self, expected_commit: str) -> None:
+        remote = self.remote_head()
+        if remote != expected_commit:
+            raise GitError(
+                f"remote moved during apply: expected {expected_commit}, found {remote}"
+            )
+        self._run("reset", "--hard", expected_commit)
+        self._run("clean", "-fd")

@@ -28,21 +28,30 @@ Version `0.2.0` implements the complete safety pipeline for an **experimental, e
 - recover interrupted transactions before performing any new Git synchronization;
 - fail closed when post-verification crash recovery cannot prove both the adopted Git baseline and matching live managed files;
 - re-fetch GitHub before adopting a successfully verified remote commit as the local baseline;
+- bind persistent Git state to the configured managed repository and branch, including separate Git push URLs;
 - retain a bounded set of SyncApp-created pre-apply backups without touching protected or unrelated backups.
 
 There is still **no direct `git pull` into `/homeassistant`**. Git checkout/reset operations only affect the isolated repository under `/data/repository`.
 
 ## Configuration
 
-- `repository_url`: target GitHub configuration repository. This is separate from the repository containing SyncApp itself.
-- `branch`: branch to synchronize, normally `main`.
-- `github_token`: GitHub token used for authenticated Git operations. It is passed to Git through process environment configuration rather than being embedded in the remote URL.
+- `homeassistant_repository_url`: target GitHub repository containing the managed Home Assistant configuration. This is separate from the repository containing SyncApp itself. Deprecated `repository_url` is accepted only as an upgrade compatibility alias.
+- `branch`: branch to synchronize, normally `main`. On an existing managed clone, changing the configured branch fails closed because the manifest and transaction state belong to the previous Git history.
+- `github_token`: GitHub token used for authenticated Git operations against the managed Home Assistant repository. It is passed to Git through process environment configuration rather than being embedded in the remote URL.
 - `poll_interval_seconds`: synchronization polling interval. Minimum 30 seconds.
 - `dry_run`: defaults to `true`. No local push or remote live apply is performed while enabled.
 - `remote_apply_enabled`: defaults to `false`. Remote live writes require this to be `true` **and** `dry_run` to be `false`.
+- `initial_local_publish_enabled`: defaults to `false`. Explicitly authorizes the guarded local-authoritative first-sync case described in `BOOTSTRAP.md`.
+- `initial_remote_apply_enabled`: defaults to `false`. Explicitly authorizes the guarded remote-authoritative first-sync case described in `BOOTSTRAP.md`; mutually exclusive with local-authoritative bootstrap.
 - `verify_timeout_seconds`: maximum time to wait for Home Assistant Core to become healthy after a restart; default 120 seconds.
 - `backup_retention_count`: defaults to `10`. After a successful remote transaction, SyncApp may delete older **unprotected backups whose names begin with `SyncApp pre-apply `**. `0` disables cleanup. Protected backups, unrelated/manual backups, backups with incomplete metadata, and the backup created for the just-completed transaction are never selected.
 - `git_user_name` / `git_user_email`: identity used for automatically generated commits.
+
+### Managed repository provenance
+
+The clone under `/data/repository` is persistent safety state. SyncApp verifies that its effective `origin` fetch URL identifies exactly the configured managed repository and that every effective Git push URL resolves to that same target. The check is repeated immediately before each fetch and push so later `.git/config` changes cannot silently redirect synchronization.
+
+The persistent checked-out branch must also equal the configured `branch`. Repository or branch changes are therefore explicit migrations rather than implicit option changes. See `REPOSITORY_PROVENANCE.md` for the complete contract and migration rationale.
 
 ## Safety model
 
@@ -52,7 +61,7 @@ The remote-to-local workflow is:
 
 ### Detect / Fetch
 
-The app fetches into an isolated Git worktree. A diverged history is blocked. Before a remote update can touch live files, the allowed live Home Assistant configuration must still match the local Git HEAD. This deliberately conservative rule avoids silently overwriting local edits that have not yet been committed and pushed.
+The app fetches into an isolated Git worktree. Before each fetch it revalidates the managed remote provenance, including effective fetch and push destinations. A diverged history is blocked. Before an ordinary remote update can touch live files, the allowed live Home Assistant configuration must still match the local Git HEAD. This deliberately conservative rule avoids silently overwriting local edits that have not yet been committed and pushed.
 
 ### Stage / Validate
 
@@ -132,6 +141,7 @@ Repository CI now covers:
 
 - policy and secret/runtime exclusion;
 - Git relationship states including divergence and empty repositories;
+- repository retargeting, separate/multiple push URL tampering, post-startup fetch/push redirection, and implicit branch-retarget refusal;
 - untrusted staging, malformed YAML/JSON/Python, Home Assistant custom tags, and Git symlink rejection;
 - staged-content SHA-256 pinning and mutation during the Supervisor backup window;
 - live-vs-HEAD drift detection;

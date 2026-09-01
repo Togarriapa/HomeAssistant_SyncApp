@@ -5,6 +5,7 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import stat
 from typing import Iterator
 
@@ -28,13 +29,7 @@ def _sha256_fd(fd: int) -> str:
 
 
 class LiveFilesystem:
-    """Descriptor-relative access to the live Home Assistant configuration tree.
-
-    Every parent component is opened with O_NOFOLLOW and subsequent leaf
-    operations are relative to the already-open parent descriptor.  This keeps
-    a concurrent pathname/symlink swap from redirecting a mutation outside the
-    directory tree that was actually opened.
-    """
+    """Descriptor-relative access to the live Home Assistant configuration tree."""
 
     def __init__(self, root: Path):
         self.root = root
@@ -61,18 +56,12 @@ class LiveFilesystem:
         current = self._open_root()
         try:
             for part in parts[:-1]:
-                flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_NOFOLLOW", 0)
-                )
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
                 try:
                     child = os.open(part, flags, dir_fd=current)
                 except FileNotFoundError:
                     if not create:
-                        raise LiveFilesystemError(
-                            f"live parent directory does not exist: {relative}"
-                        )
+                        raise LiveFilesystemError(f"live parent directory does not exist: {relative}")
                     try:
                         os.mkdir(part, mode=0o755, dir_fd=current)
                         os.fsync(current)
@@ -121,18 +110,34 @@ class LiveFilesystem:
             finally:
                 os.close(fd)
 
+    def copy_to(self, relative: str, destination: Path) -> str:
+        """Copy one live regular file to a private snapshot and return its digest."""
+        with self._open_parent(relative) as (parent_fd, leaf):
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                source_fd = os.open(leaf, flags, dir_fd=parent_fd)
+            except OSError as exc:
+                raise LiveFilesystemError(f"cannot snapshot live file safely: {relative}: {exc}") from exc
+            try:
+                info = os.fstat(source_fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise LiveFilesystemError(f"live target is not a regular file: {relative}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with os.fdopen(os.dup(source_fd), "rb") as source_handle, destination.open("xb") as target:
+                    shutil.copyfileobj(source_handle, target, length=1024 * 1024)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.chmod(destination, stat.S_IMODE(info.st_mode))
+                return _sha256_fd(source_fd)
+            finally:
+                os.close(source_fd)
+
     def replace_from(self, relative: str, source: Path, expected_sha256: str) -> None:
         if source.is_symlink() or not source.is_file():
             raise LiveFilesystemError(f"replacement source is not a regular file: {relative}")
-
         with self._open_parent(relative, create=True) as (parent_fd, leaf):
             temporary = f".{leaf}.syncapp-new"
-            flags = (
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0)
-            )
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             try:
                 temp_fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
             except FileExistsError as exc:
@@ -141,7 +146,6 @@ class LiveFilesystem:
                 ) from exc
             except OSError as exc:
                 raise LiveFilesystemError(f"cannot create live temporary file: {relative}: {exc}") from exc
-
             try:
                 digest = hashlib.sha256()
                 with source.open("rb") as source_handle:
@@ -160,14 +164,8 @@ class LiveFilesystem:
                 os.fsync(temp_fd)
             finally:
                 os.close(temp_fd)
-
             try:
-                os.replace(
-                    temporary,
-                    leaf,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
+                os.replace(temporary, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
                 os.fsync(parent_fd)
             finally:
                 try:

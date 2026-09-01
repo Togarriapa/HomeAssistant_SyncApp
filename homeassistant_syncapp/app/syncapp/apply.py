@@ -45,11 +45,6 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
             "recovery evidence is preserved and automatic rollback is blocked"
         )
 
-    # A crash can happen after Core was verified and adopt_remote() advanced the
-    # isolated Git HEAD, but before manifest/journal cleanup finished. Once Git has
-    # adopted the verified commit, automatically rolling back live files would move
-    # the live tree behind the repository baseline. Prove both Git HEAD and the live
-    # managed files still match before finalizing bookkeeping.
     if active.state == "verified":
         try:
             adopted = repository.head() == active.plan.commit
@@ -100,24 +95,14 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
     return True
 
 
-def apply_staged_remote(
+def _execute_staged_apply(
     repository: GitRepository,
     settings: Settings,
     staged: StagingResult,
+    baseline_paths: set[str],
+    *,
+    verify_noop: bool = False,
 ) -> tuple[str, ...]:
-    """Apply an already validated remote commit using a recoverable transaction."""
-    drift = detect_live_drift(repository, settings.source_dir)
-    if not drift.clean:
-        raise TransactionError(
-            "live Home Assistant configuration changed since local Git HEAD; "
-            "refusing remote apply: " + ", ".join(drift.changed)
-        )
-
-    head = repository.head()
-    baseline_paths: set[str] = set()
-    if head is not None:
-        baseline_paths = _managed_paths_at_commit(repository, head)
-
     desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(
         settings.staging_dir,
@@ -126,9 +111,14 @@ def apply_staged_remote(
         live_dir=settings.source_dir,
     )
     if not plan.affected_paths:
-        repository.fetch()
-        repository.adopt_remote(staged.commit)
-        save_manifest(settings.manifest_path, desired_paths)
+        try:
+            if verify_noop:
+                SupervisorClient().check_core_configuration()
+            repository.fetch()
+            repository.adopt_remote(staged.commit)
+            save_manifest(settings.manifest_path, desired_paths)
+        except Exception as exc:
+            raise TransactionError(f"remote no-op adoption failed safely: {exc}") from exc
         return ()
 
     supervisor = SupervisorClient()
@@ -175,8 +165,6 @@ def apply_staged_remote(
         result.backup_slug,
     )
 
-    # Retention is post-commit hygiene only. It must never turn a verified apply
-    # into a rollback or remove the backup created for the just-completed apply.
     if settings.backup_retention_count > 0:
         try:
             deleted = prune_syncapp_backups(
@@ -192,3 +180,51 @@ def apply_staged_remote(
             )
 
     return result.affected_paths
+
+
+def apply_staged_remote(
+    repository: GitRepository,
+    settings: Settings,
+    staged: StagingResult,
+) -> tuple[str, ...]:
+    """Apply an already validated remote commit using a recoverable transaction."""
+    drift = detect_live_drift(repository, settings.source_dir)
+    if not drift.clean:
+        raise TransactionError(
+            "live Home Assistant configuration changed since local Git HEAD; "
+            "refusing remote apply: " + ", ".join(drift.changed)
+        )
+
+    head = repository.head()
+    baseline_paths: set[str] = set()
+    if head is not None:
+        baseline_paths = _managed_paths_at_commit(repository, head)
+
+    return _execute_staged_apply(repository, settings, staged, baseline_paths)
+
+
+def apply_staged_initial_remote(
+    repository: GitRepository,
+    settings: Settings,
+    staged: StagingResult,
+) -> tuple[str, ...]:
+    """Adopt a populated remote as first authority through the full transaction path."""
+    if settings.manifest_path.exists():
+        raise TransactionError(
+            "initial remote bootstrap is only valid before a managed-path baseline exists"
+        )
+
+    head = repository.head()
+    if head != staged.commit:
+        raise TransactionError(
+            "initial remote bootstrap requires the isolated Git HEAD to equal the staged remote commit"
+        )
+
+    baseline_paths = collect_allowed_files(settings.source_dir)
+    return _execute_staged_apply(
+        repository,
+        settings,
+        staged,
+        baseline_paths,
+        verify_noop=True,
+    )

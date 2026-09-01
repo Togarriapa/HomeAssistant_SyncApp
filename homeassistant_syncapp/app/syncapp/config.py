@@ -24,6 +24,7 @@ class Settings:
     git_user_email: str
     backup_retention_count: int = 10
     initial_local_publish_enabled: bool = False
+    initial_remote_apply_enabled: bool = False
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
     staging_dir: Path = Path("/data/staging")
@@ -64,6 +65,11 @@ class Settings:
         dry_run = bool(raw.get("dry_run", True))
         remote_apply_enabled = bool(raw.get("remote_apply_enabled", False))
         initial_local_publish_enabled = bool(raw.get("initial_local_publish_enabled", False))
+        initial_remote_apply_enabled = bool(raw.get("initial_remote_apply_enabled", False))
+        if initial_local_publish_enabled and initial_remote_apply_enabled:
+            raise ValueError(
+                "initial_local_publish_enabled and initial_remote_apply_enabled are mutually exclusive"
+            )
         if (not dry_run or remote_apply_enabled) and not token:
             raise ValueError(
                 "github_token is required when pushes or remote apply are enabled"
@@ -81,4 +87,5 @@ class Settings:
             git_user_email=str(raw.get("git_user_email", "homeassistant-syncapp@example.invalid")),
             backup_retention_count=backup_retention_count,
             initial_local_publish_enabled=initial_local_publish_enabled,
+            initial_remote_apply_enabled=initial_remote_apply_enabled,
         )

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import logging
 
-from .apply import apply_staged_remote, recover_interrupted_apply
+from .apply import (
+    apply_staged_initial_remote,
+    apply_staged_remote,
+    recover_interrupted_apply,
+)
 from .config import Settings
 from .git_repo import GitRepository
 from .mirror import load_manifest, mirror_local_configuration, save_manifest
@@ -60,11 +64,9 @@ class SyncEngine:
             return
 
         # A missing manifest means SyncApp has not yet established a managed baseline.
-        # If the configured remote branch is already populated, never silently choose
-        # local or remote authority. The only supported explicit bootstrap today is
-        # publishing the validated local HA configuration over an *equal* cloned
-        # remote baseline. Remote-authoritative bootstrap needs its own guarded
-        # transaction path and remains deliberately unsupported here.
+        # A populated remote requires an explicit authority choice. Remote authority
+        # is permitted only when the isolated clone exactly matches the fetched remote,
+        # and it still uses the complete staged, backed-up, verified transaction path.
         if not self.settings.manifest_path.exists() and self.repository.remote_head() is not None:
             if relationship != "equal":
                 LOGGER.error(
@@ -74,11 +76,56 @@ class SyncEngine:
                     relationship,
                 )
                 return
+
+            if self.settings.initial_remote_apply_enabled:
+                try:
+                    staged = stage_remote_configuration(
+                        self.repository,
+                        self.settings.staging_dir,
+                    )
+                except StagingValidationError as exc:
+                    LOGGER.error("Rejected initial remote commit during staging validation: %s", exc)
+                    return
+
+                if self.settings.dry_run or not self.settings.remote_apply_enabled:
+                    LOGGER.warning(
+                        "Initial remote commit %s passed staging validation (%d files, %d bytes), "
+                        "but bootstrap apply is disabled (dry_run=%s remote_apply_enabled=%s)",
+                        staged.commit,
+                        staged.file_count,
+                        staged.total_bytes,
+                        self.settings.dry_run,
+                        self.settings.remote_apply_enabled,
+                    )
+                    return
+
+                try:
+                    affected = apply_staged_initial_remote(
+                        self.repository,
+                        self.settings,
+                        staged,
+                    )
+                except TransactionError as exc:
+                    LOGGER.error(
+                        "Initial remote commit %s was not bootstrapped safely: %s",
+                        staged.commit,
+                        exc,
+                    )
+                    return
+
+                LOGGER.info(
+                    "Initial remote commit %s adopted successfully (%d affected paths)",
+                    staged.commit,
+                    len(affected),
+                )
+                return
+
             if not self.settings.initial_local_publish_enabled:
                 LOGGER.error(
                     "Initial synchronization is blocked because remote branch %s is already populated. "
-                    "Set initial_local_publish_enabled=true only if the live Home Assistant configuration is intentionally "
-                    "authoritative and may replace the remote managed baseline",
+                    "Set exactly one initial authority option: initial_local_publish_enabled=true to publish the "
+                    "validated live configuration, or initial_remote_apply_enabled=true to apply the validated "
+                    "remote through the guarded transaction path",
                     self.settings.branch,
                 )
                 return

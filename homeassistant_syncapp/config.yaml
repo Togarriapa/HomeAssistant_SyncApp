@@ -23,6 +23,7 @@ options:
   dry_run: true
   remote_apply_enabled: false
   initial_local_publish_enabled: false
+  initial_remote_apply_enabled: false
   verify_timeout_seconds: 120
   backup_retention_count: 10
   git_user_name: HomeAssistant SyncApp
@@ -35,6 +36,7 @@ schema:
   dry_run: bool
   remote_apply_enabled: bool
   initial_local_publish_enabled: bool
+  initial_remote_apply_enabled: bool
   verify_timeout_seconds: int(30,600)
   backup_retention_count: int(0,100)
   git_user_name: str

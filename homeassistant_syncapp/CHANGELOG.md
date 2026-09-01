@@ -1,20 +1,27 @@
 # Changelog
 
+## 0.2.0
+
+- Add guarded remote live application behind `remote_apply_enabled: false` and `dry_run: true` defaults.
+- Treat fetched remote trees as untrusted input and statically validate YAML, JSON, and Python custom-component syntax outside `/homeassistant`.
+- Block remote apply when the live allowed configuration has drifted from local Git HEAD.
+- Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
+- Require a synchronous Supervisor partial Home Assistant backup before applying files.
+- Run the Supervisor Core configuration check after recoverable application and before restart.
+- Verify the Home Assistant Core API after restart through the Supervisor proxy.
+- Restore previous files and Core state when semantic validation, restart health, or final Git-baseline adoption fails.
+- Preserve unresolved rollback journals when recovery health cannot be proven.
+- Recover interrupted transactions before starting new Git synchronization, while avoiding unnecessary Core restarts for pre-apply transaction states.
+- Re-fetch the remote branch before adopting a verified commit so a branch move during backup/restart causes rollback.
+- Reject symlinked live targets and symlinked live configuration roots.
+- Add unit, failure-injection, Supervisor-contract, apply-plan, and local end-to-end Git integration tests.
+- Build the Docker image using the version declared in app metadata.
+
 ## 0.1.0
 
 - Bootstrap the Home Assistant app structure.
 - Add safe file filtering for local configuration capture.
 - Add authenticated Git operations without embedding the token in the remote URL.
 - Add local-to-GitHub synchronization with dry-run enabled by default.
-- Detect remote divergence and refuse unsafe local pushes or applies.
+- Detect remote divergence and refuse unsafe local pushes.
 - Stage remote Git trees outside the live Home Assistant configuration and reject blocked paths, symlinks, unsupported modes, oversized content, and malformed YAML/JSON.
-- Add guarded remote live application behind `remote_apply_enabled: false` and `dry_run: true` defaults.
-- Block remote apply when the live allowed configuration has drifted from local Git HEAD.
-- Add a persistent transaction journal and local rollback snapshot before live mutation.
-- Require a synchronous Supervisor partial backup before applying files.
-- Run the Supervisor Core configuration check before restart and verify the Core API after restart.
-- Restore the previous files and Core state when validation or health verification fails.
-- Preserve unresolved rollback journals when recovery health cannot be proven.
-- Recover interrupted transactions before starting new Git synchronization.
-- Re-fetch the remote branch before adopting a verified commit as the local baseline.
-- Add failure-injection tests for backup, semantic-check, post-restart health, rollback-health, crash recovery, live drift, and symlink defenses.

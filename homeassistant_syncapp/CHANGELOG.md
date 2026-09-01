@@ -12,6 +12,7 @@
 - Add a staged HAOS filesystem canary: read-only `O_NOFOLLOW`/`dir_fd` validation by default, plus an explicit disposable-instance blocked-`*.tmp` create/fsync/replace/readback/unlink/directory-fsync probe with exclusive source/destination reservation and fail-closed cleanup.
 - Record a redacted HAOS/Core/Supervisor runtime fingerprint in canary output and make stale `.syncapp-canary-*.tmp` evidence block the explicit write probe; successful probes prove zero matching leftovers before and after mutation.
 - Make the explicit backup canary fail closed unless the newly created synchronous backup is immediately present exactly once in Supervisor inventory under the returned slug and requested canary name; restart escalation occurs only after that proof succeeds.
+- For filesystem-backed HAOS canaries, hash the complete policy-approved live configuration tree before and after the probe and fail closed on any approved path/content drift while keeping secret/runtime exclusions unchanged and hashes out of emitted evidence.
 - Create live transaction temporary files with `O_EXCL|O_NOFOLLOW`, atomically replace them relative to an opened parent descriptor, fsync that descriptor after mutation, and clean temporary files when pre-replace verification fails.
 - Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
 - Write new transaction journals as version 2 with a canonical SHA-256 integrity checksum and validate all recovery-critical fields before interpreting transaction state.

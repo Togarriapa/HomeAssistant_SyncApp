@@ -111,29 +111,43 @@ Retention runs only **after** the transaction has been verified, adopted in Git,
 
 Protected backups, manual/unrelated backups, ambiguous metadata, and the current transaction backup fail closed and are preserved.
 
-## Supervisor canary
+## Home Assistant OS canary
 
-The app image includes `/app/canary.py` for exercising the real Supervisor integration **without changing any Home Assistant configuration file**.
+The app image includes `/app/canary.py` for staged validation on a **disposable** Home Assistant OS installation. The canonical procedure and evidence fields are maintained in `CANARY.md`; use that file rather than treating the abbreviated commands below as the complete acceptance matrix.
 
-The default command is non-mutating with respect to configuration and performs Core info, Core API health, and `/core/check` calls:
+The default command is configuration-non-mutating and checks the redacted runtime identity, Core API health, and `/core/check`:
 
 ```sh
 python3 /app/canary.py
 ```
 
-To additionally prove synchronous partial-backup creation:
+A read-only live-filesystem level proves descriptor-relative/no-follow access and hashes the complete policy-approved live tree before and after the run:
 
 ```sh
-python3 /app/canary.py --backup
+python3 /app/canary.py --filesystem
 ```
 
-The restart probe is intentionally separate and explicit because it restarts Home Assistant Core:
+Only on the disposable canary, the explicit write probe creates, replaces, verifies, and removes **blocked random `*.tmp` files only**. It never intentionally edits a policy-approved Home Assistant configuration file:
 
 ```sh
-python3 /app/canary.py --backup --restart --timeout 120
+python3 /app/canary.py --filesystem --filesystem-write-probe
 ```
 
-A disposable/canary Home Assistant OS installation should pass all three levels before `remote_apply_enabled` is enabled anywhere important. The canary does not modify `/homeassistant`; the full remote-apply path should then be tested with a harmless, reversible configuration-only commit on that disposable instance.
+The backup level creates a synchronous partial Home Assistant backup, verifies inventory and detail identity, proves Home Assistant content is present, and confirms the database-exclusion request:
+
+```sh
+python3 /app/canary.py --filesystem --backup
+```
+
+Core restart is gated behind that fresh verified backup:
+
+```sh
+python3 /app/canary.py --filesystem --backup --restart --timeout 120
+```
+
+For filesystem-backed levels, success also requires the policy-approved live path set and file contents to be unchanged after the probe. Secret/runtime exclusions remain unchanged, so logs, databases, `.storage`, `secrets.yaml`, keys/certificates, caches, and the canary's blocked temp files are outside that managed-configuration comparison.
+
+These probes reduce ambiguity but do not replace the full issue #4 transaction exercise. Only after they pass should the disposable instance test a harmless remote commit through **Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Roll back if necessary**. Keep remote apply disabled on important instances until the full real-runtime matrix passes.
 
 ## Test coverage
 
@@ -146,9 +160,9 @@ Repository CI now covers:
 - staged-content SHA-256 pinning and mutation during the Supervisor backup window;
 - live-vs-HEAD drift detection;
 - minimal apply-plan deletion/write behavior;
-- Supervisor endpoint request/response contracts, including backup inventory and scoped deletion;
+- Supervisor endpoint request/response contracts, including backup inventory/detail lookup and scoped deletion;
 - conservative backup-retention selection and protected/unrelated-backup preservation;
-- Supervisor canary escalation behavior;
+- staged Supervisor/filesystem canary escalation, backup-content evidence, restart gating, and live-configuration invariance;
 - backup failure before mutation;
 - local edits occurring during the backup window;
 - semantic-check failure before restart;
@@ -163,6 +177,6 @@ Repository CI now covers:
 
 ## Experimental status
 
-The repository-level safety model is implemented and heavily failure-injected, but automated local tests cannot prove real Supervisor backup duration/semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, Core restart/health transitions, or backup inventory/deletion behavior on Home Assistant OS hardware.
+The repository-level safety model is implemented and heavily failure-injected, but automated local tests cannot prove real Supervisor backup duration/semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, Core restart/health transitions, or backup inventory/detail behavior on Home Assistant OS hardware.
 
-Keep `remote_apply_enabled: false` on any important instance until version `0.2.0` has passed the next milestone on a disposable/canary Home Assistant OS installation. That real-runtime canary is now the primary blocker to considering automatic remote apply production-ready.
+Keep `remote_apply_enabled: false` on any important instance until version `0.2.0` has passed the full disposable Home Assistant OS acceptance matrix in issue #4. Real-runtime validation is now the primary blocker to considering automatic remote apply production-ready.

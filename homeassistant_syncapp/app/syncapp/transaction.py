@@ -46,6 +46,11 @@ class TransactionError(RuntimeError):
 
 class SupervisorOperations(Protocol):
     def create_homeassistant_backup(self, name: str) -> str: ...
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]: ...
     def check_core_configuration(self) -> dict: ...
     def restart_core(self) -> None: ...
     def wait_for_core_api(self, timeout_seconds: int) -> dict: ...
@@ -381,10 +386,10 @@ def execute_verified_transaction(
     *,
     health_timeout_seconds: int = 120,
 ) -> TransactionResult:
+    backup_name = f"SyncApp pre-apply {transaction.plan.commit[:12]}"
     try:
-        slug = supervisor.create_homeassistant_backup(
-            f"SyncApp pre-apply {transaction.plan.commit[:12]}"
-        )
+        slug = supervisor.create_homeassistant_backup(backup_name)
+        supervisor.verify_homeassistant_backup(slug, backup_name)
         transaction.record_supervisor_backup(slug)
     except Exception as exc:
         transaction.discard()

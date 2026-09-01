@@ -23,9 +23,12 @@ def _parse_created(value: object) -> datetime | None:
         return None
     normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        return datetime.fromisoformat(normalized)
+        created = datetime.fromisoformat(normalized)
     except ValueError:
         return None
+    if created.tzinfo is None or created.utcoffset() is None:
+        return None
+    return created
 
 
 def select_expired_syncapp_backups(

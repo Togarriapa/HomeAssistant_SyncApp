@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from urllib.parse import urlparse
 
 
 LOGGER = logging.getLogger(__name__)
+_GITHUB_HOSTS = {"github.com", "www.github.com"}
 
 
 class GitError(RuntimeError):
@@ -45,6 +47,9 @@ class GitRepository:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         if self.token:
+            parsed = urlparse(self.remote_url)
+            if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
+                raise GitError("refusing to send GitHub token to a non-GitHub HTTPS remote")
             credential = base64.b64encode(
                 f"x-access-token:{self.token}".encode("utf-8")
             ).decode("ascii")
@@ -163,11 +168,8 @@ class GitRepository:
             "merge-base", "--is-ancestor", older, newer, check=False
         ).returncode == 0
 
-    def remote_tree_entries(self) -> list[GitTreeEntry]:
-        remote = self.remote_head()
-        if remote is None:
-            return []
-        raw = self._run_bytes("ls-tree", "-r", "-z", remote).stdout
+    def tree_entries(self, ref: str) -> list[GitTreeEntry]:
+        raw = self._run_bytes("ls-tree", "-r", "-z", ref).stdout
         entries: list[GitTreeEntry] = []
         for record in raw.split(b"\0"):
             if not record:
@@ -182,6 +184,12 @@ class GitRepository:
             path = raw_path.decode("utf-8")
             entries.append(GitTreeEntry(mode, object_type, object_id, path))
         return entries
+
+    def remote_tree_entries(self) -> list[GitTreeEntry]:
+        remote = self.remote_head()
+        if remote is None:
+            return []
+        return self.tree_entries(remote)
 
     def blob_size(self, object_id: str) -> int:
         output = self._run("cat-file", "-s", object_id).stdout.strip()
@@ -209,3 +217,12 @@ class GitRepository:
 
     def push(self) -> None:
         self._run("push", "-u", "origin", f"HEAD:refs/heads/{self.branch}")
+
+    def adopt_remote(self, expected_commit: str) -> None:
+        remote = self.remote_head()
+        if remote != expected_commit:
+            raise GitError(
+                f"remote moved during apply: expected {expected_commit}, found {remote}"
+            )
+        self._run("reset", "--hard", expected_commit)
+        self._run("clean", "-fd")

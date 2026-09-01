@@ -49,6 +49,29 @@ class StagingTests(unittest.TestCase):
             self.assertEqual(result.file_count, 2)
             self.assertTrue((staging / "configuration.yaml").is_file())
 
+    def test_stages_valid_python_custom_component(self) -> None:
+        repo = FakeRepository(
+            {"custom_components/example/__init__.py": b"async def async_setup(hass, config):\n    return True\n"}
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            staging = Path(temp) / "staging"
+            stage_remote_configuration(repo, staging)
+            self.assertTrue((staging / "custom_components/example/__init__.py").is_file())
+
+    def test_rejects_malformed_python_and_keeps_previous_staging(self) -> None:
+        repo = FakeRepository(
+            {"custom_components/example/__init__.py": b"async def broken(:\n    pass\n"}
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            staging = Path(temp) / "staging"
+            staging.mkdir()
+            marker = staging / "known-good.txt"
+            marker.write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(StagingValidationError, "invalid Python syntax"):
+                stage_remote_configuration(repo, staging)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+            self.assertFalse(Path(temp, "staging.new").exists())
+
     def test_rejects_secret_file(self) -> None:
         repo = FakeRepository({"secrets.yaml": b"password: nope\n"})
         with tempfile.TemporaryDirectory() as temp:

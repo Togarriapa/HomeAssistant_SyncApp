@@ -1,5 +1,5 @@
 name: HomeAssistant SyncApp
-version: "0.1.0"
+version: "0.2.0"
 slug: homeassistant_syncapp
 description: Safely synchronize Home Assistant configuration with GitHub
 url: "https://github.com/Togarriapa/HomeAssistant_SyncApp"
@@ -21,6 +21,8 @@ options:
   branch: main
   poll_interval_seconds: 60
   dry_run: true
+  remote_apply_enabled: false
+  verify_timeout_seconds: 120
   git_user_name: HomeAssistant SyncApp
   git_user_email: homeassistant-syncapp@example.invalid
 schema:
@@ -29,5 +31,7 @@ schema:
   github_token: password?
   poll_interval_seconds: int(30,86400)
   dry_run: bool
+  remote_apply_enabled: bool
+  verify_timeout_seconds: int(30,600)
   git_user_name: str
   git_user_email: email

@@ -17,11 +17,14 @@ class Settings:
     github_token: str | None
     poll_interval_seconds: int
     dry_run: bool
+    remote_apply_enabled: bool
+    verify_timeout_seconds: int
     git_user_name: str
     git_user_email: str
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
     staging_dir: Path = Path("/data/staging")
+    transaction_dir: Path = Path("/data/transaction")
     manifest_path: Path = Path("/data/managed_paths.json")
 
     @classmethod
@@ -41,11 +44,18 @@ class Settings:
         if interval < 30:
             raise ValueError("poll_interval_seconds must be at least 30")
 
+        verify_timeout = int(raw.get("verify_timeout_seconds", 120))
+        if not 30 <= verify_timeout <= 600:
+            raise ValueError("verify_timeout_seconds must be between 30 and 600")
+
         token = raw.get("github_token")
         token = str(token).strip() if token else None
         dry_run = bool(raw.get("dry_run", True))
-        if not dry_run and not token:
-            raise ValueError("github_token is required when dry_run is disabled")
+        remote_apply_enabled = bool(raw.get("remote_apply_enabled", False))
+        if (not dry_run or remote_apply_enabled) and not token:
+            raise ValueError(
+                "github_token is required when pushes or remote apply are enabled"
+            )
 
         return cls(
             repository_url=repository_url,
@@ -53,6 +63,8 @@ class Settings:
             github_token=token,
             poll_interval_seconds=interval,
             dry_run=dry_run,
+            remote_apply_enabled=remote_apply_enabled,
+            verify_timeout_seconds=verify_timeout,
             git_user_name=str(raw.get("git_user_name", "HomeAssistant SyncApp")),
-            git_user_email=str(raw.get("git_user_email", "homeassistant-syncapp@localhost")),
+            git_user_email=str(raw.get("git_user_email", "homeassistant-syncapp@example.invalid")),
         )

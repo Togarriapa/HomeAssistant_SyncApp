@@ -26,13 +26,26 @@ class SyncEngine:
     def run_once(self) -> None:
         self.repository.ensure()
         self.repository.fetch()
+        relationship = self.repository.relationship()
 
-        if self.repository.remote_changed():
+        if relationship in {"remote_only", "remote_ahead", "diverged"}:
             LOGGER.warning(
-                "Remote commit detected on %s. Remote-to-local apply is disabled in "
-                "this milestone; refusing to create a local commit until it is handled.",
+                "Git state is %s on branch %s. Remote-to-local apply is disabled in "
+                "this milestone; refusing to create or push a local commit.",
+                relationship,
                 self.settings.branch,
             )
+            return
+
+        if relationship == "local_ahead":
+            if self.settings.dry_run:
+                LOGGER.warning(
+                    "Local branch is ahead of GitHub, but dry-run is enabled; push skipped"
+                )
+                return
+            LOGGER.warning("Local branch is ahead of GitHub; retrying previous push")
+            self.repository.push()
+            LOGGER.info("Previously committed local changes were pushed successfully")
             return
 
         previous_managed = load_manifest(self.settings.manifest_path)

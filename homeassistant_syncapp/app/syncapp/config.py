@@ -20,9 +20,9 @@ class Settings:
     dry_run: bool
     remote_apply_enabled: bool
     verify_timeout_seconds: int
-    backup_retention_count: int
     git_user_name: str
     git_user_email: str
+    backup_retention_count: int = 10
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
     staging_dir: Path = Path("/data/staging")
@@ -75,7 +75,7 @@ class Settings:
             dry_run=dry_run,
             remote_apply_enabled=remote_apply_enabled,
             verify_timeout_seconds=verify_timeout,
-            backup_retention_count=backup_retention_count,
             git_user_name=str(raw.get("git_user_name", "HomeAssistant SyncApp")),
             git_user_email=str(raw.get("git_user_email", "homeassistant-syncapp@example.invalid")),
+            backup_retention_count=backup_retention_count,
         )

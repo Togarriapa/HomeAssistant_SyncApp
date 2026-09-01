@@ -19,6 +19,9 @@
 - Validate local-to-GitHub candidates with the same static size/syntax rules and live Supervisor `/core/check` before creating commits.
 - Refuse local commits when the existing Git index tracks any blocked secret/runtime path.
 - Discard rejected and dry-run local candidates from the isolated Git worktree so staged state cannot leak into later cycles.
+- Expose `homeassistant_repository_url` as the explicit read/write target repository, separate from the SyncApp source repository.
+- Reject using `Togarriapa/HomeAssistant_SyncApp` itself as the Home Assistant configuration target and reject conflicting legacy/new target options.
+- Retain the deprecated `repository_url` target option as an upgrade compatibility alias for existing experimental installations.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.

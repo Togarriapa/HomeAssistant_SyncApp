@@ -9,10 +9,33 @@ from urllib.parse import urlparse
 
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
+_SYNCAPP_REPOSITORY_IDENTITY = ("github.com", "togarriapa/homeassistant_syncapp")
+
+
+def _validate_github_repository_url(value: str, option_name: str) -> tuple[str, str]:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError(f"{option_name} must be an HTTPS Git repository URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{option_name} must not contain embedded credentials")
+    hostname = parsed.hostname.lower()
+    if hostname not in _GITHUB_HOSTS:
+        raise ValueError(f"{option_name} must point to github.com")
+
+    path = parsed.path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    parts = path.split("/") if path else []
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"{option_name} must identify one GitHub repository")
+    return "github.com", "/".join(parts).lower()
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    # Internal compatibility name. User-facing configuration uses
+    # homeassistant_repository_url so the app source repository and the managed
+    # Home Assistant configuration repository are never confused.
     repository_url: str
     branch: str
     github_token: str | None
@@ -29,18 +52,41 @@ class Settings:
     transaction_dir: Path = Path("/data/transaction")
     manifest_path: Path = Path("/data/managed_paths.json")
 
+    @property
+    def homeassistant_repository_url(self) -> str:
+        return self.repository_url
+
     @classmethod
     def load(cls, path: str | Path) -> "Settings":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
 
-        repository_url = str(raw.get("repository_url") or "").strip()
-        parsed = urlparse(repository_url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise ValueError("repository_url must be an HTTPS Git repository URL")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("repository_url must not contain embedded credentials")
-        if parsed.hostname.lower() not in _GITHUB_HOSTS:
-            raise ValueError("repository_url must point to github.com")
+        configured_url = str(raw.get("homeassistant_repository_url") or "").strip()
+        legacy_url = str(raw.get("repository_url") or "").strip()
+        if not configured_url and not legacy_url:
+            raise ValueError("homeassistant_repository_url is required")
+
+        if configured_url and legacy_url:
+            configured_identity = _validate_github_repository_url(
+                configured_url, "homeassistant_repository_url"
+            )
+            legacy_identity = _validate_github_repository_url(
+                legacy_url, "repository_url"
+            )
+            if configured_identity != legacy_identity:
+                raise ValueError(
+                    "homeassistant_repository_url and deprecated repository_url disagree"
+                )
+
+        repository_url = configured_url or legacy_url
+        option_name = (
+            "homeassistant_repository_url" if configured_url else "repository_url"
+        )
+        repository_identity = _validate_github_repository_url(repository_url, option_name)
+        if repository_identity == _SYNCAPP_REPOSITORY_IDENTITY:
+            raise ValueError(
+                "homeassistant_repository_url must point to a separate Home Assistant "
+                "configuration repository, not the SyncApp source repository"
+            )
 
         branch = str(raw.get("branch", "main")).strip()
         if not branch or not _BRANCH_RE.fullmatch(branch) or ".." in branch:

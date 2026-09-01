@@ -11,8 +11,34 @@ class FakeCanaryClient:
         self.calls: list[str] = []
 
     def core_info(self) -> dict:
-        self.calls.append("info")
-        return {"version": "2026.9.0"}
+        self.calls.append("core-info")
+        return {
+            "version": "2026.9.0",
+            "arch": "amd64",
+            "machine": "generic-x86-64",
+            "image": "ghcr.io/home-assistant/qemux86-64-homeassistant",
+            "ip_address": "172.30.32.1",
+        }
+
+    def supervisor_info(self) -> dict:
+        self.calls.append("supervisor-info")
+        return {
+            "version": "2026.09.0",
+            "arch": "amd64",
+            "version_latest": "2026.09.1",
+        }
+
+    def host_info(self) -> dict:
+        self.calls.append("host-info")
+        return {
+            "operating_system": "Home Assistant OS 17.0",
+            "kernel": "6.12.0-haos",
+            "agent_version": "1.7.2",
+            "deployment": "production",
+            "virtualization": "kvm",
+            "hostname": "private-hostname",
+            "disk_free": 123.4,
+        }
 
     def core_api_health(self) -> dict:
         self.calls.append("health")
@@ -35,10 +61,38 @@ class FakeCanaryClient:
 
 
 class CanaryTests(unittest.TestCase):
-    def test_default_canary_is_non_mutating(self):
+    def test_default_canary_is_non_mutating_and_records_redacted_environment(self):
         client = FakeCanaryClient()
         result = run_canary(client)  # type: ignore[arg-type]
-        self.assertEqual(client.calls, ["info", "health", "check"])
+
+        self.assertEqual(
+            client.calls,
+            ["core-info", "supervisor-info", "host-info", "health", "check"],
+        )
+        self.assertEqual(
+            result["environment"],
+            {
+                "core": {
+                    "version": "2026.9.0",
+                    "arch": "amd64",
+                    "machine": "generic-x86-64",
+                    "image": "ghcr.io/home-assistant/qemux86-64-homeassistant",
+                },
+                "supervisor": {"version": "2026.09.0", "arch": "amd64"},
+                "host": {
+                    "operating_system": "Home Assistant OS 17.0",
+                    "kernel": "6.12.0-haos",
+                    "agent_version": "1.7.2",
+                    "deployment": "production",
+                    "virtualization": "kvm",
+                },
+            },
+        )
+        rendered = repr(result["environment"])
+        self.assertNotIn("private-hostname", rendered)
+        self.assertNotIn("172.30.32.1", rendered)
+        self.assertNotIn("disk_free", rendered)
+        self.assertNotIn("version_latest", rendered)
         self.assertNotIn("backup_slug", result)
         self.assertNotIn("post_restart_core_api", result)
         self.assertNotIn("filesystem", result)
@@ -53,7 +107,16 @@ class CanaryTests(unittest.TestCase):
         )
         self.assertEqual(
             client.calls,
-            ["info", "health", "check", "backup", "restart", "wait:90"],
+            [
+                "core-info",
+                "supervisor-info",
+                "host-info",
+                "health",
+                "check",
+                "backup",
+                "restart",
+                "wait:90",
+            ],
         )
         self.assertEqual(result["backup_slug"], "backup-slug")
         self.assertEqual(result["post_restart_core_api"], {"message": "API running."})
@@ -74,6 +137,7 @@ class CanaryTests(unittest.TestCase):
             self.assertTrue(result["probe_path_exists_regular"])
             self.assertTrue(result["probe_path_read_verified"])
             self.assertFalse(result["write_probe"])
+            self.assertNotIn("stale_probe_files_before", result)
 
     def test_readonly_filesystem_probe_requires_existing_regular_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,21 +165,60 @@ class CanaryTests(unittest.TestCase):
             self.assertTrue(result["file_fsync"])
             self.assertTrue(result["directory_fsync"])
             self.assertTrue(result["write_probe_cleanup"])
+            self.assertEqual(result["stale_probe_files_before"], 0)
+            self.assertEqual(result["stale_probe_files_after"], 0)
 
-    def test_write_probe_random_name_collision_never_overwrites_existing_file(self):
+    def test_write_probe_refuses_preexisting_canary_evidence_without_touching_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+            (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
+            stale = live / ".syncapp-canary-previous.tmp"
+            stale.write_text("preserve evidence\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "stale .syncapp-canary-.* evidence exists"):
+                run_filesystem_canary(live, write_probe=True)
+
+            self.assertEqual(stale.read_text(encoding="utf-8"), "preserve evidence\n")
+            self.assertEqual(
+                sorted(path.name for path in live.iterdir()),
+                [".syncapp-canary-previous.tmp", "configuration.yaml"],
+            )
+
+    def test_exclusive_reservation_still_blocks_collision_after_clean_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
             live = Path(temporary) / "live"
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             collision = live / ".syncapp-canary-fixed.tmp"
-            collision.write_text("preserve me\n", encoding="utf-8")
+            collision.write_text("preserve race winner\n", encoding="utf-8")
 
-            with mock.patch("canary.secrets.token_hex", return_value="fixed"):
+            # Model the race where the preflight saw a clean directory but a
+            # matching path appeared before the O_EXCL reservation.
+            with mock.patch("canary._canary_temp_names", return_value=()), mock.patch(
+                "canary.secrets.token_hex", return_value="fixed"
+            ):
                 with self.assertRaisesRegex(RuntimeError, "already exists"):
                     run_filesystem_canary(live, write_probe=True)
 
-            self.assertEqual(collision.read_text(encoding="utf-8"), "preserve me\n")
+            self.assertEqual(
+                collision.read_text(encoding="utf-8"),
+                "preserve race winner\n",
+            )
             self.assertFalse((live / ".syncapp-canary-fixed-replaced.tmp").exists())
+
+    def test_nonmatching_tmp_file_does_not_block_write_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+            (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
+            unrelated = live / ".other-canary.tmp"
+            unrelated.write_text("unrelated\n", encoding="utf-8")
+
+            result = run_filesystem_canary(live, write_probe=True)
+
+            self.assertTrue(result["write_probe"])
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "unrelated\n")
 
     def test_write_probe_replace_failure_cleans_both_owned_files(self):
         with tempfile.TemporaryDirectory() as temporary:

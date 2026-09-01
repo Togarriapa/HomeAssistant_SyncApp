@@ -13,6 +13,59 @@ from syncapp.supervisor import SupervisorClient
 
 
 DEFAULT_LIVE_ROOT = Path("/homeassistant")
+CANARY_TEMP_PREFIX = ".syncapp-canary-"
+CANARY_TEMP_SUFFIX = ".tmp"
+
+
+def _selected_fields(data: dict, fields: tuple[str, ...]) -> dict[str, object]:
+    return {field: data[field] for field in fields if field in data}
+
+
+def _require_nonempty_string(data: dict, field: str, component: str) -> None:
+    value = data.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(
+            f"canary environment evidence is missing required {component} {field}"
+        )
+
+
+def _environment_evidence(client: SupervisorClient) -> dict[str, object]:
+    """Return a shareable allowlisted environment fingerprint for canary evidence."""
+    core = client.core_info()
+    supervisor = client.supervisor_info()
+    host = client.host_info()
+    _require_nonempty_string(core, "version", "Core")
+    _require_nonempty_string(supervisor, "version", "Supervisor")
+    _require_nonempty_string(host, "operating_system", "host")
+    return {
+        "core": _selected_fields(
+            core,
+            ("version", "arch", "machine", "image"),
+        ),
+        "supervisor": _selected_fields(
+            supervisor,
+            ("version", "arch"),
+        ),
+        "host": _selected_fields(
+            host,
+            (
+                "operating_system",
+                "kernel",
+                "agent_version",
+                "deployment",
+                "virtualization",
+            ),
+        ),
+    }
+
+
+def _canary_temp_names(root_fd: int) -> tuple[str, ...]:
+    names = (
+        name
+        for name in os.listdir(root_fd)
+        if name.startswith(CANARY_TEMP_PREFIX) and name.endswith(CANARY_TEMP_SUFFIX)
+    )
+    return tuple(sorted(names))
 
 
 def run_filesystem_canary(
@@ -23,7 +76,7 @@ def run_filesystem_canary(
 ) -> dict[str, object]:
     """Probe the live HA mount without touching configuration content.
 
-    The default probe is read-only.  The explicit write probe creates only
+    The default probe is read-only. The explicit write probe creates only
     randomly named ``*.tmp`` files, which are blocked by SyncApp policy, and
     removes them before returning.
     """
@@ -73,7 +126,22 @@ def run_filesystem_canary(
         }
 
         if write_probe:
+            stale_before = _canary_temp_names(root_fd)
+            if stale_before:
+                raise RuntimeError(
+                    "refusing filesystem write probe while stale .syncapp-canary-*.tmp "
+                    f"evidence exists under the live root ({len(stale_before)} file(s)); "
+                    "inspect and resolve it before continuing"
+                )
             result.update(_run_filesystem_write_probe(root_fd))
+            stale_after = _canary_temp_names(root_fd)
+            if stale_after:
+                raise RuntimeError(
+                    "filesystem write probe returned with .syncapp-canary-*.tmp "
+                    f"evidence still present ({len(stale_after)} file(s))"
+                )
+            result["stale_probe_files_before"] = 0
+            result["stale_probe_files_after"] = 0
         return result
     except LiveFilesystemError as exc:
         raise RuntimeError(f"live filesystem canary failed: {exc}") from exc
@@ -94,8 +162,8 @@ def _create_owned_probe_file(root_fd: int, name: str) -> int:
 def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
     """Prove descriptor-relative replace/unlink/fsync on the real live mount."""
     token = secrets.token_hex(12)
-    source_name = f".syncapp-canary-{token}.tmp"
-    destination_name = f".syncapp-canary-{token}-replaced.tmp"
+    source_name = f"{CANARY_TEMP_PREFIX}{token}{CANARY_TEMP_SUFFIX}"
+    destination_name = f"{CANARY_TEMP_PREFIX}{token}-replaced{CANARY_TEMP_SUFFIX}"
     payload = secrets.token_bytes(64)
     created: set[str] = set()
 
@@ -174,7 +242,8 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
                 cleanup_error = cleanup_error or exc
         if cleanup_error is not None:
             raise RuntimeError(
-                f"filesystem canary cleanup failed; inspect blocked .syncapp-canary-*.tmp files: {cleanup_error}"
+                "filesystem canary cleanup failed; inspect blocked "
+                f"{CANARY_TEMP_PREFIX}*{CANARY_TEMP_SUFFIX} files: {cleanup_error}"
             ) from cleanup_error
 
 
@@ -191,7 +260,7 @@ def run_canary(
 ) -> dict[str, object]:
     """Exercise real integration contracts without modifying HA config files."""
     result: dict[str, object] = {
-        "core_info": client.core_info(),
+        "environment": _environment_evidence(client),
         "core_api": client.core_api_health(),
         "configuration_check": client.check_core_configuration(),
     }

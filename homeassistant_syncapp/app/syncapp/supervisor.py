@@ -119,6 +119,15 @@ class SupervisorClient:
     def core_info(self) -> dict:
         return self._unwrap(self._request("GET", "/core/info"), "Core info")
 
+    def supervisor_info(self) -> dict:
+        return self._unwrap(
+            self._request("GET", "/supervisor/info"),
+            "Supervisor info",
+        )
+
+    def host_info(self) -> dict:
+        return self._unwrap(self._request("GET", "/host/info"), "host info")
+
     def core_api_health(self, *, timeout: int = 10) -> dict:
         response = self._request("GET", "/core/api/", timeout=timeout)
         data = self._unwrap(response, "Core API health check")

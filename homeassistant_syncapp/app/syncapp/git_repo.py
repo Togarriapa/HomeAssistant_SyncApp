@@ -103,6 +103,45 @@ class GitRepository:
             raise GitError(f"git {' '.join(args)} failed: {detail}")
         return process
 
+    def _origin_urls(self, *, push: bool) -> list[str]:
+        args = ["remote", "get-url"]
+        if push:
+            args.append("--push")
+        args.extend(["--all", "origin"])
+        result = self._run(*args, check=False)
+        if result.returncode != 0:
+            direction = "push" if push else "fetch"
+            raise GitError(
+                f"existing managed repository has no readable origin {direction} URL; "
+                "refusing implicit reconfiguration"
+            )
+        urls = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not urls:
+            direction = "push" if push else "fetch"
+            raise GitError(
+                f"existing managed repository has no readable origin {direction} URL; "
+                "refusing implicit reconfiguration"
+            )
+        return urls
+
+    def _assert_remote_provenance(self) -> None:
+        expected = _remote_identity(self.remote_url)
+        fetch_urls = self._origin_urls(push=False)
+        if len(fetch_urls) != 1 or any(
+            _remote_identity(value) != expected for value in fetch_urls
+        ):
+            raise GitError(
+                "configured managed repository differs from the origin fetch URL stored under /data; "
+                "refusing implicit retargeting because Git history and managed-path state belong to the existing target"
+            )
+
+        push_urls = self._origin_urls(push=True)
+        if any(_remote_identity(value) != expected for value in push_urls):
+            raise GitError(
+                "origin push URL differs from the configured managed repository; "
+                "refusing to send Home Assistant configuration to an unapproved Git target"
+            )
+
     def ensure(self) -> None:
         existing_repository = (self.path / ".git").exists()
         if not existing_repository:
@@ -125,20 +164,16 @@ class GitRepository:
                 detail = result.stderr.strip() or result.stdout.strip()
                 raise GitError(f"git clone failed: {detail}")
         else:
-            existing_remote_result = self._run(
-                "remote", "get-url", "origin", check=False
-            )
-            if existing_remote_result.returncode != 0:
+            self._assert_remote_provenance()
+            current = self._run("branch", "--show-current").stdout.strip()
+            if current != self.branch:
+                shown = current or "<detached>"
                 raise GitError(
-                    "existing managed repository has no readable origin; refusing implicit reconfiguration"
-                )
-            existing_remote = existing_remote_result.stdout.strip()
-            if _remote_identity(existing_remote) != _remote_identity(self.remote_url):
-                raise GitError(
-                    "configured managed repository differs from the repository already stored under /data; "
-                    "refusing implicit retargeting because Git history and managed-path state belong to the existing target"
+                    f"configured managed branch {self.branch!r} differs from persistent branch {shown!r}; "
+                    "refusing implicit branch retargeting because managed-path and transaction provenance belong to the existing branch"
                 )
 
+        self._assert_remote_provenance()
         self._run("config", "user.name", self.user_name)
         self._run("config", "user.email", self.user_email)
         self.fetch()
@@ -157,6 +192,7 @@ class GitRepository:
             self._run("checkout", "-B", self.branch)
 
     def fetch(self) -> None:
+        self._assert_remote_provenance()
         self._run("fetch", "--prune", "origin")
 
     def head(self) -> str | None:
@@ -261,6 +297,7 @@ class GitRepository:
         return head
 
     def push(self) -> None:
+        self._assert_remote_provenance()
         self._run("push", "-u", "origin", f"HEAD:refs/heads/{self.branch}")
 
     def adopt_remote(self, expected_commit: str) -> None:

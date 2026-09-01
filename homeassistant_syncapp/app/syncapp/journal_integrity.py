@@ -46,6 +46,7 @@ class JournalRecord:
     delete_paths: tuple[str, ...]
     write_sha256: tuple[tuple[str, str], ...]
     existed: frozenset[str]
+    snapshot_sha256: tuple[tuple[str, str], ...]
     supervisor_backup: str | None
 
 
@@ -79,13 +80,35 @@ def _path_tuple(value: object, field: str) -> tuple[str, ...]:
     return paths
 
 
-def _snapshot_paths(snapshot_dir: Path) -> set[str]:
+def _digest_map(value: object, field: str) -> dict[str, str]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(digest, str) for key, digest in value.items()
+    ):
+        raise JournalIntegrityError(f"{field} must be an object of path-to-SHA-256 strings")
+    result = dict(value)
+    for relative, digest in result.items():
+        if not is_allowed_relative(relative):
+            raise JournalIntegrityError(f"{field} contains blocked or unsafe path: {relative}")
+        if not _DIGEST_RE.fullmatch(digest):
+            raise JournalIntegrityError(f"{field} contains an invalid SHA-256 digest for {relative}")
+    return result
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_hashes(snapshot_dir: Path) -> dict[str, str]:
     if snapshot_dir.is_symlink():
         raise JournalIntegrityError("transaction snapshot root must not be a symlink")
     if not snapshot_dir.is_dir():
         raise JournalIntegrityError("transaction snapshot directory is missing")
 
-    found: set[str] = set()
+    found: dict[str, str] = {}
     for directory, dirnames, filenames in os.walk(snapshot_dir, followlinks=False):
         directory_path = Path(directory)
         for dirname in dirnames:
@@ -101,7 +124,7 @@ def _snapshot_paths(snapshot_dir: Path) -> set[str]:
                 raise JournalIntegrityError(
                     f"transaction snapshot contains blocked or unsafe path: {relative}"
                 )
-            found.add(relative)
+            found[relative] = _sha256_file(child)
     return found
 
 
@@ -138,19 +161,11 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
     if not affected:
         raise JournalIntegrityError("transaction journal has an empty apply plan")
 
-    raw_hashes = data.get("write_sha256", {})
-    if not isinstance(raw_hashes, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in raw_hashes.items()
-    ):
-        raise JournalIntegrityError("transaction journal contains an invalid staged-content hash map")
-    for relative, digest in raw_hashes.items():
+    raw_hashes = _digest_map(data.get("write_sha256", {}), "write_sha256")
+    for relative in raw_hashes:
         if relative not in write_paths:
             raise JournalIntegrityError(
                 f"transaction journal contains a hash for a non-write path: {relative}"
-            )
-        if not _DIGEST_RE.fullmatch(digest):
-            raise JournalIntegrityError(
-                f"transaction journal contains an invalid SHA-256 digest for {relative}"
             )
     if raw_hashes and set(raw_hashes) != set(write_paths):
         raise JournalIntegrityError("transaction journal staged-content hashes are incomplete")
@@ -159,6 +174,20 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
     existed = frozenset(existed_paths)
     if not existed <= affected:
         raise JournalIntegrityError("transaction journal existed paths are outside the apply plan")
+
+    raw_snapshot_hashes = _digest_map(data.get("snapshot_sha256", {}), "snapshot_sha256")
+    if version == 1 and raw_snapshot_hashes:
+        raise JournalIntegrityError("legacy transaction journal must not contain snapshot_sha256")
+    if version == 2:
+        if state == "preparing":
+            if raw_snapshot_hashes:
+                raise JournalIntegrityError(
+                    "preparing transaction journal must not claim complete snapshot hashes"
+                )
+        elif set(raw_snapshot_hashes) != set(existed):
+            raise JournalIntegrityError(
+                "transaction journal snapshot hashes do not match the existed set"
+            )
 
     backup = data.get("supervisor_backup")
     if backup is not None:
@@ -170,10 +199,10 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
         )
 
     if state in _STATES_REQUIRING_COMPLETE_SNAPSHOT:
-        snapshot_paths = _snapshot_paths(snapshot_dir)
-        if snapshot_paths != set(existed):
-            missing = sorted(set(existed) - snapshot_paths)
-            unexpected = sorted(snapshot_paths - set(existed))
+        actual_snapshot_hashes = _snapshot_hashes(snapshot_dir)
+        if set(actual_snapshot_hashes) != set(existed):
+            missing = sorted(set(existed) - set(actual_snapshot_hashes))
+            unexpected = sorted(set(actual_snapshot_hashes) - set(existed))
             details: list[str] = []
             if missing:
                 details.append("missing=" + ",".join(missing))
@@ -183,6 +212,17 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
                 "transaction snapshot does not match journal existed set"
                 + (": " + " ".join(details) if details else "")
             )
+        if version == 2:
+            changed = sorted(
+                relative
+                for relative, expected in raw_snapshot_hashes.items()
+                if actual_snapshot_hashes.get(relative) != expected
+            )
+            if changed:
+                raise JournalIntegrityError(
+                    "transaction rollback snapshot content digest does not match for: "
+                    + ", ".join(changed)
+                )
 
     return JournalRecord(
         version=version,
@@ -192,5 +232,6 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
         delete_paths=delete_paths,
         write_sha256=tuple(sorted(raw_hashes.items())),
         existed=existed,
+        snapshot_sha256=tuple(sorted(raw_snapshot_hashes.items())),
         supervisor_backup=backup,
     )

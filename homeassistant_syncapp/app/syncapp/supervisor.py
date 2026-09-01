@@ -71,6 +71,16 @@ class SupervisorClient:
             raise SupervisorError(f"Supervisor {operation} returned unexpected data")
         return data
 
+    @staticmethod
+    def _safe_backup_slug(slug: str) -> str:
+        if not slug or any(
+            character
+            not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+            for character in slug
+        ):
+            raise SupervisorError("refusing invalid backup slug")
+        return quote(slug, safe="")
+
     def check_core_configuration(self) -> dict:
         return self._unwrap(
             self._request("POST", "/core/check", {}),
@@ -100,14 +110,21 @@ class SupervisorClient:
     def list_backups(self) -> list[dict]:
         data = self._unwrap(self._request("GET", "/backups"), "backup inventory")
         backups = data.get("backups", [])
-        if not isinstance(backups, list) or not all(isinstance(item, dict) for item in backups):
+        if not isinstance(backups, list) or not all(
+            isinstance(item, dict) for item in backups
+        ):
             raise SupervisorError("Supervisor backup inventory returned unexpected data")
         return list(backups)
 
+    def backup_info(self, slug: str) -> dict:
+        encoded = self._safe_backup_slug(slug)
+        return self._unwrap(
+            self._request("GET", f"/backups/{encoded}/info"),
+            f"backup information {slug}",
+        )
+
     def delete_backup(self, slug: str) -> None:
-        if not slug or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in slug):
-            raise SupervisorError("refusing invalid backup slug")
-        encoded = quote(slug, safe="")
+        encoded = self._safe_backup_slug(slug)
         self._unwrap(
             self._request("DELETE", f"/backups/{encoded}"),
             f"backup deletion {slug}",
@@ -137,7 +154,11 @@ class SupervisorClient:
             )
         return data
 
-    def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict:
+    def wait_for_core_api(
+        self,
+        timeout_seconds: int,
+        poll_seconds: float = 2.0,
+    ) -> dict:
         deadline = time.monotonic() + timeout_seconds
         last_error: Exception | None = None
         while time.monotonic() < deadline:

@@ -50,6 +50,24 @@ class LiveFilesystemTests(unittest.TestCase):
             with self.assertRaisesRegex(LiveFilesystemError, "regular file"):
                 LiveFilesystem(live).exists_regular("configuration.yaml")
 
+    def test_snapshot_capture_rejects_live_change_during_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live = root / "live"
+            snapshot = root / "snapshot.yaml"
+            live.mkdir()
+            target = live / "configuration.yaml"
+            target.write_text("old: true\n", encoding="utf-8")
+            real_copyfileobj = __import__("shutil").copyfileobj
+
+            def copy_then_mutate(source_handle, target_handle, length=0):
+                real_copyfileobj(source_handle, target_handle, length=length)
+                target.write_text("changed: true\n", encoding="utf-8")
+
+            with mock.patch("syncapp.live_fs.shutil.copyfileobj", side_effect=copy_then_mutate):
+                with self.assertRaisesRegex(LiveFilesystemError, "changed while rollback snapshot"):
+                    LiveFilesystem(live).copy_to("configuration.yaml", snapshot)
+
     def test_replace_refuses_preexisting_transaction_temp_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

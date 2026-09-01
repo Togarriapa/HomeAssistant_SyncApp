@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from syncapp.apply import apply_staged_remote
+from syncapp.apply import apply_staged_initial_remote, apply_staged_remote
 from syncapp.config import Settings
 from syncapp.git_repo import GitRepository
 from syncapp.staging import stage_remote_configuration
@@ -146,6 +146,35 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertEqual(supervisor.restarts, 1)
         self.assertIn("configuration.yaml", affected)
         self.assertIn("obsolete.yaml", affected)
+
+    def test_initial_remote_bootstrap_replaces_only_policy_allowed_live_baseline(self) -> None:
+        remote = self.repository.remote_head()
+        assert remote is not None
+        staged = stage_remote_configuration(self.repository, self.staging)
+        self.assertEqual(staged.commit, remote)
+
+        (self.live / "configuration.yaml").write_text("version: local\n", encoding="utf-8")
+        (self.live / "local_only.yaml").write_text("remove: true\n", encoding="utf-8")
+        (self.live / "secrets.yaml").write_text("password: keep-me\n", encoding="utf-8")
+        supervisor = FakeSupervisor()
+
+        with patch("syncapp.apply.SupervisorClient", return_value=supervisor):
+            affected = apply_staged_initial_remote(self.repository, self.settings, staged)
+
+        self.assertEqual((self.live / "configuration.yaml").read_text(), "version: old\n")
+        self.assertEqual((self.live / "obsolete.yaml").read_text(), "remove: true\n")
+        self.assertFalse((self.live / "local_only.yaml").exists())
+        self.assertEqual((self.live / "secrets.yaml").read_text(), "password: keep-me\n")
+        self.assertEqual(self.repository.head(), remote)
+        self.assertTrue(self.manifest.exists())
+        self.assertFalse(self.transaction.exists())
+        self.assertEqual(supervisor.backups, 1)
+        self.assertEqual(supervisor.checks, 1)
+        self.assertEqual(supervisor.restarts, 1)
+        self.assertEqual(supervisor.health_checks, 1)
+        self.assertIn("configuration.yaml", affected)
+        self.assertIn("local_only.yaml", affected)
+        self.assertNotIn("secrets.yaml", affected)
 
     def test_remote_move_during_restart_window_rolls_live_files_back(self) -> None:
         candidate = self._push_remote_candidate()

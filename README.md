@@ -37,5 +37,9 @@ After a remote configuration has passed Core health verification and the exact c
 
 Remote live application is disabled by default: `dry_run` defaults to `true` and `remote_apply_enabled` defaults to `false`. Both first-sync authority flags also default to `false`.
 
+## Disposable HAOS canary
+
+Before enabling remote apply on any important Home Assistant instance, use the staged procedure in `homeassistant_syncapp/CANARY.md`. It starts with the existing non-mutating Supervisor checks, adds a read-only probe of descriptor-relative access on the actual `/homeassistant` mount, then offers an explicit canary-only blocked-`*.tmp` write/replace/unlink/fsync probe before backup/restart and full transaction testing. The helper never substitutes for the complete issue #4 transaction matrix.
+
 > [!WARNING]
 > This project is in early development and is not yet ready to manage a production Home Assistant instance. The transaction path has automated failure-injection coverage, but it still requires canary testing against a real Home Assistant OS/Supervisor installation before production use.

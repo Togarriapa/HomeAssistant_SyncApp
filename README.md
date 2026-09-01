@@ -13,7 +13,7 @@ For example, the app may be installed from `Togarriapa/HomeAssistant_SyncApp` wh
 
 SyncApp rejects using its own source repository as the managed Home Assistant target. The old `repository_url` setting is accepted only as a deprecated upgrade alias; when both old and new values are present they must identify the same GitHub repository or startup fails closed.
 
-An existing `/data/repository` is also bound to its original `origin`. Changing `homeassistant_repository_url` does **not** silently repoint that clone, because its Git history and `/data` managed-state artifacts belong to the original target. SyncApp fails closed on a target mismatch; repository migration/reinitialization must be an explicit operation rather than an implicit side effect of changing an option.
+An existing `/data/repository` is bound to both its approved remote identity and its persistent branch. SyncApp verifies the effective `origin` fetch URL, every effective `origin` push URL, and the checked-out branch before reuse, and repeats remote provenance validation immediately before every fetch and push. This prevents a tampered Git `pushurl`, an implicit repository retarget, or a silent branch switch from reusing managed-path/transaction state against a different destination or history. See `homeassistant_syncapp/REPOSITORY_PROVENANCE.md` for the full contract.
 
 ## Design goal
 

@@ -1,4 +1,5 @@
-FROM ghcr.io/home-assistant/base:latest
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+FROM ${BUILD_FROM}
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
@@ -14,6 +15,8 @@ RUN chmod a+x /run.sh
 LABEL \
     io.hass.version="${BUILD_VERSION}" \
     io.hass.type="app" \
-    io.hass.arch="${BUILD_ARCH}"
+    io.hass.arch="${BUILD_ARCH}" \
+    org.opencontainers.image.title="HomeAssistant SyncApp" \
+    org.opencontainers.image.source="https://github.com/Togarriapa/HomeAssistant_SyncApp"
 
 CMD ["/run.sh"]

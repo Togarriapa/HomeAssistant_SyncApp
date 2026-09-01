@@ -185,6 +185,28 @@ class CanaryTests(unittest.TestCase):
                 [".syncapp-canary-previous.tmp", "configuration.yaml"],
             )
 
+    def test_exclusive_reservation_still_blocks_collision_after_clean_preflight(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / "live"
+            live.mkdir()
+            (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
+            collision = live / ".syncapp-canary-fixed.tmp"
+            collision.write_text("preserve race winner\n", encoding="utf-8")
+
+            # Model the race where the preflight saw a clean directory but a
+            # matching path appeared before the O_EXCL reservation.
+            with mock.patch("canary._canary_temp_names", return_value=()), mock.patch(
+                "canary.secrets.token_hex", return_value="fixed"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    run_filesystem_canary(live, write_probe=True)
+
+            self.assertEqual(
+                collision.read_text(encoding="utf-8"),
+                "preserve race winner\n",
+            )
+            self.assertFalse((live / ".syncapp-canary-fixed-replaced.tmp").exists())
+
     def test_nonmatching_tmp_file_does_not_block_write_probe(self):
         with tempfile.TemporaryDirectory() as temporary:
             live = Path(temporary) / "live"

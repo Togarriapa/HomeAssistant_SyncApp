@@ -32,8 +32,9 @@ class SupervisorClientTests(unittest.TestCase):
         slug = client.create_homeassistant_backup("before apply")
 
         self.assertEqual(slug, "backup-slug")
-        method, path, payload, _timeout = client.calls[0]
+        method, path, payload, timeout = client.calls[0]
         self.assertEqual((method, path), ("POST", "/backups/new/partial"))
+        self.assertEqual(timeout, 900)
         self.assertEqual(
             payload,
             {

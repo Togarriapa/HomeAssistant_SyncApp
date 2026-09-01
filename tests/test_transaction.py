@@ -17,12 +17,14 @@ class FakeSupervisor:
         *,
         fail_backup: bool = False,
         fail_backup_verify: bool = False,
+        fail_backup_verify_calls: set[int] | None = None,
         fail_check: bool = False,
         fail_health_once: bool = False,
         fail_health_always: bool = False,
     ):
         self.fail_backup = fail_backup
         self.fail_backup_verify = fail_backup_verify
+        self.fail_backup_verify_calls = fail_backup_verify_calls or set()
         self.fail_check = fail_check
         self.fail_health_once = fail_health_once
         self.fail_health_always = fail_health_always
@@ -44,7 +46,7 @@ class FakeSupervisor:
         expected_name: str,
     ) -> dict[str, object]:
         self.backup_verifications += 1
-        if self.fail_backup_verify:
+        if self.fail_backup_verify or self.backup_verifications in self.fail_backup_verify_calls:
             raise RuntimeError("backup evidence unavailable")
         return {
             "slug": slug,
@@ -105,7 +107,7 @@ class TransactionTests(unittest.TestCase):
             self.assertFalse((live / "obsolete.yaml").exists())
             self.assertEqual(result.backup_slug, "backup-123")
             self.assertEqual(supervisor.backups, 1)
-            self.assertEqual(supervisor.backup_verifications, 1)
+            self.assertEqual(supervisor.backup_verifications, 3)
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 1)
             self.assertEqual(supervisor.health_checks, 1)
@@ -163,6 +165,56 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
 
+    def test_backup_disappearing_before_apply_blocks_live_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            tx = FileTransaction.prepare(
+                tx_root,
+                live,
+                staging,
+                ApplyPlan("f" * 40, ("configuration.yaml",), ()),
+            )
+            supervisor = FakeSupervisor(fail_backup_verify_calls={2})
+
+            with self.assertRaisesRegex(TransactionError, "aborted without mutation.*backup evidence unavailable"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertFalse(tx_root.exists())
+            self.assertEqual(supervisor.backup_verifications, 2)
+            self.assertEqual(supervisor.checks, 0)
+            self.assertEqual(supervisor.restarts, 0)
+            self.assertEqual(supervisor.health_checks, 0)
+
+    def test_backup_disappearing_after_apply_rolls_back_before_core_check_or_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            tx = FileTransaction.prepare(
+                tx_root,
+                live,
+                staging,
+                ApplyPlan("f" * 40, ("configuration.yaml",), ()),
+            )
+            supervisor = FakeSupervisor(fail_backup_verify_calls={3})
+
+            with self.assertRaisesRegex(TransactionError, "previous configuration was restored.*backup evidence unavailable"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertFalse(tx_root.exists())
+            self.assertEqual(supervisor.backup_verifications, 3)
+            self.assertEqual(supervisor.checks, 0)
+            self.assertEqual(supervisor.restarts, 0)
+            self.assertEqual(supervisor.health_checks, 0)
+
     def test_apply_refuses_prepared_state_without_recorded_supervisor_backup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -199,7 +251,7 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
-            self.assertEqual(supervisor.backup_verifications, 1)
+            self.assertEqual(supervisor.backup_verifications, 3)
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
@@ -221,7 +273,7 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
-            self.assertEqual(supervisor.backup_verifications, 1)
+            self.assertEqual(supervisor.backup_verifications, 3)
             self.assertEqual(supervisor.checks, 2)
             self.assertEqual(supervisor.restarts, 2)
             self.assertEqual(supervisor.health_checks, 2)
@@ -245,6 +297,7 @@ class TransactionTests(unittest.TestCase):
             active = FileTransaction.load_active(tx_root, live, staging)
             self.assertIsNotNone(active)
             self.assertEqual(active.state, "rollback_health_failed")  # type: ignore[union-attr]
+            self.assertEqual(supervisor.backup_verifications, 3)
             self.assertEqual(supervisor.restarts, 2)
             self.assertEqual(supervisor.health_checks, 2)
 

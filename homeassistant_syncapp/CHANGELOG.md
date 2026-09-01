@@ -4,7 +4,7 @@
 
 - Add guarded remote live application behind `remote_apply_enabled: false` and `dry_run: true` defaults.
 - Treat fetched remote trees as untrusted input and statically validate YAML, JSON, and Python custom-component syntax outside `/homeassistant`.
-- Block remote apply when the live allowed configuration has drifted from local Git HEAD.
+- Block ordinary remote apply when the live allowed configuration has drifted from local Git HEAD.
 - Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
 - Require a synchronous Supervisor partial Home Assistant backup before applying files.
 - Run the Supervisor Core configuration check after recoverable application and before restart.
@@ -21,9 +21,13 @@
 - Discard rejected and dry-run local candidates from the isolated Git worktree so staged state cannot leak into later cycles.
 - Fail closed on first synchronization when the configured remote branch is already populated instead of silently choosing local or remote authority.
 - Add `initial_local_publish_enabled: false`; it must be explicitly enabled before a fresh instance may publish validated live configuration over an already-populated equal remote baseline.
-- Keep non-equal populated first-sync states blocked even when local initial publish is enabled; remote-authoritative bootstrap remains deliberately unsupported until it has its own staged/backup/verify transaction path.
+- Add `initial_remote_apply_enabled: false` as a mutually exclusive remote-authoritative first-sync option.
+- Require an exact equal isolated/fetched Git relationship before remote-authoritative bootstrap; non-equal populated first-sync states remain blocked.
+- Route remote-authoritative bootstrap through the same Stage → Validate → Backup → Apply → Verify → Rollback transaction machinery as normal remote updates rather than bypassing drift protection globally.
+- During remote-authoritative bootstrap, treat every policy-approved live file as the reversible baseline so remote omissions are journaled deletes while `secrets.yaml`, `.storage`, databases, logs, keys/certificates, and other blocked runtime files remain outside the transaction.
+- Keep both `dry_run: false` and `remote_apply_enabled: true` required before the bootstrap can mutate `/homeassistant`.
 - Reject symlinked live targets and symlinked live configuration roots.
-- Add unit, failure-injection, Supervisor-contract, apply-plan, local end-to-end Git integration, and static type-check coverage.
+- Add unit, failure-injection, Supervisor-contract, apply-plan, local/remote end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.
 
 ## 0.1.0

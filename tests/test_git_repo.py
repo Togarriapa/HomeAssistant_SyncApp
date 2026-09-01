@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -59,13 +60,17 @@ class GitRepositoryTests(unittest.TestCase):
         configure_identity(other)
         return other
 
+    def _other_remote(self) -> Path:
+        other_remote = self.root / "other-remote.git"
+        other_remote.mkdir()
+        git(other_remote, "init", "--bare")
+        return other_remote
+
     def test_equal_after_clone(self) -> None:
         self.assertEqual(self.repository.relationship(), "equal")
 
     def test_existing_clone_refuses_implicit_retarget(self) -> None:
-        other_remote = self.root / "other-remote.git"
-        other_remote.mkdir()
-        git(other_remote, "init", "--bare")
+        other_remote = self._other_remote()
         original_origin = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             cwd=self.work,
@@ -99,8 +104,114 @@ class GitRepositoryTests(unittest.TestCase):
     def test_existing_clone_without_origin_fails_closed(self) -> None:
         git(self.work, "remote", "remove", "origin")
 
-        with self.assertRaisesRegex(GitError, "no readable origin"):
+        with self.assertRaisesRegex(GitError, "no readable origin fetch URL"):
             self.repository.ensure()
+
+    def test_existing_clone_refuses_unapproved_push_url(self) -> None:
+        other_remote = self._other_remote()
+        git(self.work, "remote", "set-url", "--push", "origin", str(other_remote))
+
+        with self.assertRaisesRegex(GitError, "push URL differs"):
+            self.repository.ensure()
+
+        push_url = subprocess.run(
+            ["git", "remote", "get-url", "--push", "origin"],
+            cwd=self.work,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertEqual(push_url, str(other_remote))
+
+    def test_push_rechecks_remote_provenance_after_startup(self) -> None:
+        other_remote = self._other_remote()
+        git(self.work, "remote", "set-url", "--push", "origin", str(other_remote))
+        (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")
+        self.repository.add_all()
+        self.repository.commit("local")
+
+        with self.assertRaisesRegex(GitError, "unapproved Git target"):
+            self.repository.push()
+
+        self.assertEqual(self.repository.relationship(), "local_ahead")
+        refs = subprocess.run(
+            ["git", "show-ref"],
+            cwd=other_remote,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertEqual(refs, "")
+
+    def test_fetch_rechecks_remote_provenance_after_startup(self) -> None:
+        other_remote = self._other_remote()
+        git(self.work, "remote", "set-url", "origin", str(other_remote))
+
+        with self.assertRaisesRegex(GitError, "refusing implicit retargeting"):
+            self.repository.fetch()
+
+    def test_existing_clone_refuses_multiple_fetch_urls(self) -> None:
+        other_remote = self._other_remote()
+        git(self.work, "remote", "set-url", "--add", "origin", str(other_remote))
+
+        with self.assertRaisesRegex(GitError, "refusing implicit retargeting"):
+            self.repository.ensure()
+
+    def test_existing_clone_refuses_implicit_branch_retarget(self) -> None:
+        retargeted = GitRepository(
+            path=self.work,
+            remote_url=str(self.remote),
+            branch="different-branch",
+            token=None,
+            user_name="SyncApp Test",
+            user_email="syncapp-test@example.invalid",
+        )
+
+        with self.assertRaisesRegex(GitError, "refusing implicit branch retargeting"):
+            retargeted.ensure()
+
+        current_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=self.work,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertEqual(current_branch, "main")
+        self.assertEqual(self.repository.relationship(), "equal")
+
+    def test_repository_hooks_are_disabled_for_managed_commits(self) -> None:
+        hook_marker = self.root / "hook-ran"
+        hook = self.work / ".git" / "hooks" / "pre-commit"
+        hook.write_text(
+            f"#!/bin/sh\necho ran > {hook_marker}\nexit 97\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")
+        self.repository.add_all()
+        commit = self.repository.commit("hook isolation")
+
+        self.assertTrue(commit)
+        self.assertFalse(hook_marker.exists())
+
+    def test_repository_hooks_are_disabled_for_managed_pushes(self) -> None:
+        hook_marker = self.root / "push-hook-ran"
+        hook = self.work / ".git" / "hooks" / "pre-push"
+        hook.write_text(
+            f"#!/bin/sh\necho ran > {hook_marker}\nexit 98\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        (self.work / "scripts.yaml").write_text("{}\n", encoding="utf-8")
+        self.repository.add_all()
+        self.repository.commit("push hook isolation")
+        self.repository.push()
+
+        self.assertFalse(hook_marker.exists())
+        self.assertEqual(self.repository.relationship(), "equal")
 
     def test_local_ahead(self) -> None:
         (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")

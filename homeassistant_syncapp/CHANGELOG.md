@@ -33,7 +33,10 @@
 - Expose `homeassistant_repository_url` as the explicit managed Home Assistant read/write target, separate from the SyncApp source repository.
 - Reject using `Togarriapa/HomeAssistant_SyncApp` itself as the managed Home Assistant repository, reject malformed multi-component GitHub targets, and reject conflicting legacy/new target options.
 - Retain deprecated `repository_url` only as an upgrade compatibility alias; it is no longer presented as the default add-on option.
-- Bind an existing `/data/repository` clone to its original `origin`; changing the configured managed repository now fails closed instead of silently rewriting `origin` and reusing unrelated Git/manifest state.
+- Bind an existing `/data/repository` clone to its approved `origin` fetch and push destinations; a mismatched or additional effective push URL fails closed before configuration can be sent to another target.
+- Recheck managed remote provenance immediately before every fetch and push so `.git/config` changes after startup cannot silently redirect synchronization.
+- Bind persistent managed state to the configured branch as well as repository identity; changing `branch` on an existing managed clone fails closed instead of reusing manifest/transaction provenance against another history.
+- Isolate every managed Git subprocess from inherited repository/worktree overrides and global/system Git configuration, disable repository hooks and credential helpers, and scope the GitHub authorization header to `https://github.com/` instead of applying it globally.
 - Reject an existing managed clone with a missing/unreadable `origin` rather than guessing how to reconfigure persistent state.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local/remote end-to-end Git integration, and static type-check coverage.

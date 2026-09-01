@@ -304,7 +304,9 @@ def execute_verified_transaction(
         )
         transaction.record_supervisor_backup(slug)
     except Exception as exc:
-        transaction.rollback()
+        # No live target has been modified before the transaction reaches apply().
+        # Discarding preparation state avoids rewriting otherwise unchanged files.
+        transaction.discard()
         raise TransactionError(f"pre-apply Supervisor backup failed: {exc}") from exc
 
     restart_requested = False

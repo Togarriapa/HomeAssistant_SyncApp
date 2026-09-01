@@ -45,7 +45,7 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
             "recovery evidence is preserved and automatic rollback is blocked"
         )
 
-    if active.state == "verified":
+    if active.state in {"verified", "completed"}:
         try:
             adopted = repository.head() == active.plan.commit
         except Exception as exc:
@@ -79,6 +79,12 @@ def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> 
                 active.plan.commit,
             )
             return True
+
+        if active.state == "completed":
+            raise TransactionError(
+                "completed transaction no longer matches the adopted Git baseline; "
+                "recovery evidence is preserved and automatic rollback is blocked"
+            )
 
     LOGGER.error(
         "Found interrupted remote-apply transaction for %s in state %s; rolling back before sync",
@@ -135,10 +141,6 @@ def _execute_staged_apply(
             supervisor,
             health_timeout_seconds=settings.verify_timeout_seconds,
         )
-        repository.fetch()
-        repository.adopt_remote(result.commit)
-        save_manifest(settings.manifest_path, desired_paths)
-        transaction.complete()
     except Exception as exc:
         active = FileTransaction.load_active(
             settings.transaction_dir,
@@ -157,6 +159,46 @@ def _execute_staged_apply(
                     f"remote apply failed ({exc}); automatic recovery also failed ({recovery_error})"
                 ) from recovery_error
         raise TransactionError(f"remote apply failed safely: {exc}") from exc
+
+    try:
+        repository.fetch()
+        repository.adopt_remote(result.commit)
+    except Exception as exc:
+        active = FileTransaction.load_active(
+            settings.transaction_dir,
+            settings.source_dir,
+            settings.staging_dir,
+        )
+        if active is not None:
+            try:
+                recover_active_transaction(
+                    active,
+                    supervisor,
+                    health_timeout_seconds=settings.verify_timeout_seconds,
+                )
+            except Exception as recovery_error:
+                raise TransactionError(
+                    f"verified remote apply could not adopt Git baseline ({exc}); "
+                    f"automatic recovery also failed ({recovery_error})"
+                ) from recovery_error
+        raise TransactionError(
+            f"verified remote apply could not adopt Git baseline and was rolled back safely: {exc}"
+        ) from exc
+
+    # From this point onward Git has adopted the exact commit that already passed
+    # Core verification and the live files match it. Rolling the files back while
+    # leaving Git adopted would create a split-brain baseline. Preserve the verified
+    # journal instead; recover_interrupted_apply() can prove Git/live agreement and
+    # retry only the remaining bookkeeping on the next cycle.
+    try:
+        save_manifest(settings.manifest_path, desired_paths)
+        transaction.complete()
+    except Exception as exc:
+        raise TransactionError(
+            "verified remote commit was adopted, but post-verification bookkeeping failed; "
+            "live files and verified recovery journal are preserved for safe finalization: "
+            f"{exc}"
+        ) from exc
 
     LOGGER.info(
         "Applied and verified remote commit %s (%d affected paths, backup %s)",

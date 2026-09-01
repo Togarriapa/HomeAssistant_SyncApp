@@ -6,20 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Iterable, Protocol
+from typing import Protocol
 
-from .policy import collect_allowed_files, is_allowed_relative
-
-
-class TransactionError(RuntimeError):
-    pass
-
-
-class SupervisorOperations(Protocol):
-    def create_homeassistant_backup(self, name: str) -> str: ...
-    def check_core_configuration(self) -> dict: ...
-    def restart_core(self) -> None: ...
-    def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict: ...
+from .policy import is_allowed_relative
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +34,39 @@ class TransactionResult:
     affected_paths: tuple[str, ...]
 
 
+class TransactionError(RuntimeError):
+    pass
+
+
+class SupervisorOperations(Protocol):
+    def create_homeassistant_backup(self, name: str) -> str: ...
+
+    def check_core_configuration(self) -> dict: ...
+
+    def restart_core(self) -> None: ...
+
+    def wait_for_core_api(self, timeout_seconds: int) -> dict: ...
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    _fsync_file(source)
+    os.replace(source, destination)
+    _fsync_directory(destination.parent)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -53,71 +75,49 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
-        os.fsync(handle.fileno())
-
-
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _durable_replace(temporary: Path, target: Path) -> None:
-    _fsync_file(temporary)
-    os.replace(temporary, target)
-    _fsync_directory(target.parent)
-
-
 def _pin_staged_content(staging_dir: Path, plan: ApplyPlan) -> ApplyPlan:
-    """Bind every planned write to the exact staged bytes prepared for this transaction."""
     hashes: list[tuple[str, str]] = []
     for relative in plan.write_paths:
         source = staging_dir / relative
         if source.is_symlink() or not source.is_file():
-            raise TransactionError(f"staged source disappeared or changed type: {relative}")
+            raise TransactionError(f"staged source is not a regular file: {relative}")
         hashes.append((relative, _sha256_file(source)))
     return ApplyPlan(
         commit=plan.commit,
         write_paths=plan.write_paths,
         delete_paths=plan.delete_paths,
-        write_sha256=tuple(hashes),
+        write_sha256=tuple(sorted(hashes)),
     )
 
 
 def build_apply_plan(
     staging_dir: Path,
-    baseline_paths: Iterable[str],
+    baseline_paths: set[str],
     commit: str,
     *,
     live_dir: Path | None = None,
 ) -> ApplyPlan:
-    """Build the smallest safe file plan for an already drift-checked live tree."""
-    desired = collect_allowed_files(staging_dir)
-    baseline = {path for path in baseline_paths if is_allowed_relative(path)}
     write_paths: list[str] = []
-
-    for relative in sorted(desired):
+    staged_paths: set[str] = set()
+    for path in sorted(staging_dir.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(staging_dir).as_posix()
+        if not is_allowed_relative(relative):
+            raise TransactionError(f"blocked path reached apply planner: {relative}")
+        staged_paths.add(relative)
         if live_dir is None:
             write_paths.append(relative)
             continue
         live = live_dir / relative
-        staged = staging_dir / relative
-        if live.is_symlink() or (live.exists() and not live.is_file()):
-            raise TransactionError(f"live target is not a regular file: {relative}")
-        if not live.exists() or live.read_bytes() != staged.read_bytes():
+        if live.is_symlink() or not live.is_file() or live.read_bytes() != path.read_bytes():
             write_paths.append(relative)
 
-    return _pin_staged_content(
-        staging_dir,
-        ApplyPlan(
-            commit=commit,
-            write_paths=tuple(write_paths),
-            delete_paths=tuple(sorted(baseline - desired)),
-        ),
+    delete_paths = tuple(sorted(baseline_paths - staged_paths))
+    return ApplyPlan(
+        commit=commit,
+        write_paths=tuple(write_paths),
+        delete_paths=delete_paths,
     )
 
 
@@ -235,9 +235,11 @@ class FileTransaction:
             backup = data.get("supervisor_backup")
             tx.supervisor_backup = str(backup) if backup else None
             tx.state = str(data.get("state", "unknown"))
-            if tx.state == "completed":
-                tx.discard()
-                return None
+            # A completed journal can remain if cleanup crashed after the durable
+            # state transition. Do not discard it merely because the word
+            # "completed" was persisted: the recovery layer must first prove that
+            # Git still points at this verified commit and that live managed files
+            # still match it. Only then may cleanup be retried safely.
             return tx
         except TransactionError:
             raise

@@ -15,6 +15,8 @@
 - Re-fetch the remote branch before adopting a verified commit so a branch move during backup/restart causes rollback.
 - Pin staged transaction writes with SHA-256 so staged bytes cannot change during a long Supervisor backup window.
 - Fail closed when a verified/adopted transaction has ambiguous live drift before crash-recovery bookkeeping completes.
+- After an exact verified commit has been adopted in Git, preserve live files and the verified journal if manifest/final cleanup bookkeeping fails; retry proof-based finalization on the next cycle instead of rolling live files back behind the adopted Git baseline.
+- Treat a residual `completed` journal as post-verification bookkeeping state: finalize only when the adopted Git commit and live managed files can still be proven to match, otherwise preserve evidence and block automatic rollback.
 - Add bounded retention for old unprotected SyncApp-created pre-apply backups; protected and unrelated backups are never selected for deletion.
 - Validate local-to-GitHub candidates with the same static size/syntax rules and live Supervisor `/core/check` before creating commits.
 - Refuse local commits when the existing Git index tracks any blocked secret/runtime path.

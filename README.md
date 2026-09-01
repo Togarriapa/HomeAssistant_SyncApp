@@ -13,6 +13,8 @@ For example, the app may be installed from `Togarriapa/HomeAssistant_SyncApp` wh
 
 SyncApp rejects using its own source repository as the managed Home Assistant target. The old `repository_url` setting is accepted only as a deprecated upgrade alias; when both old and new values are present they must identify the same GitHub repository or startup fails closed.
 
+An existing `/data/repository` is also bound to its original `origin`. Changing `homeassistant_repository_url` does **not** silently repoint that clone, because its Git history and `/data` managed-state artifacts belong to the original target. SyncApp fails closed on a target mismatch; repository migration/reinitialization must be an explicit operation rather than an implicit side effect of changing an option.
+
 ## Design goal
 
 Availability comes before automatic convergence. Remote updates must never be pulled directly into the live Home Assistant configuration.

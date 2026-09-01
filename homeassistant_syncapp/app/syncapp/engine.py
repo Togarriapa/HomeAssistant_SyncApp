@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 
+from .apply import apply_staged_remote, recover_interrupted_apply
 from .config import Settings
 from .git_repo import GitRepository
 from .mirror import load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
 from .staging import StagingValidationError, stage_remote_configuration
+from .transaction import TransactionError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -25,6 +27,9 @@ class SyncEngine:
         )
 
     def run_once(self) -> None:
+        # A crash during a previous apply is resolved before any new Git activity.
+        recover_interrupted_apply(self.settings)
+
         self.repository.ensure()
         self.repository.fetch()
         relationship = self.repository.relationship()
@@ -43,18 +48,31 @@ class SyncEngine:
                     self.settings.staging_dir,
                 )
             except StagingValidationError as exc:
-                LOGGER.error(
-                    "Rejected remote commit during staging validation: %s",
-                    exc,
+                LOGGER.error("Rejected remote commit during staging validation: %s", exc)
+                return
+
+            if self.settings.dry_run or not self.settings.remote_apply_enabled:
+                LOGGER.warning(
+                    "Remote commit %s passed staging validation (%d files, %d bytes), "
+                    "but live apply is disabled (dry_run=%s remote_apply_enabled=%s)",
+                    staged.commit,
+                    staged.file_count,
+                    staged.total_bytes,
+                    self.settings.dry_run,
+                    self.settings.remote_apply_enabled,
                 )
                 return
 
-            LOGGER.warning(
-                "Remote commit %s passed staging validation (%d files, %d bytes). "
-                "Live apply remains disabled until backup/apply/verify/rollback is implemented.",
+            try:
+                affected = apply_staged_remote(self.repository, self.settings, staged)
+            except TransactionError as exc:
+                LOGGER.error("Remote commit %s was not applied safely: %s", staged.commit, exc)
+                return
+
+            LOGGER.info(
+                "Remote commit %s applied successfully (%d affected paths)",
                 staged.commit,
-                staged.file_count,
-                staged.total_bytes,
+                len(affected),
             )
             return
 

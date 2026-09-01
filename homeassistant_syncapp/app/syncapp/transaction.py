@@ -13,6 +13,7 @@ from .journal_integrity import (
     attach_journal_digest,
     validate_journal_payload,
 )
+from .live_fs import LiveFilesystem, LiveFilesystemError
 from .policy import is_allowed_relative
 
 
@@ -45,11 +46,8 @@ class TransactionError(RuntimeError):
 
 class SupervisorOperations(Protocol):
     def create_homeassistant_backup(self, name: str) -> str: ...
-
     def check_core_configuration(self) -> dict: ...
-
     def restart_core(self) -> None: ...
-
     def wait_for_core_api(self, timeout_seconds: int) -> dict: ...
 
 
@@ -59,17 +57,6 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
-        os.fsync(handle.fileno())
-
-
-def _durable_replace(source: Path, destination: Path) -> None:
-    _fsync_file(source)
-    os.replace(source, destination)
-    _fsync_directory(destination.parent)
 
 
 def _sha256_file(path: Path) -> str:
@@ -117,33 +104,19 @@ def build_apply_plan(
         live = live_dir / relative
         if live.is_symlink() or not live.is_file() or live.read_bytes() != path.read_bytes():
             write_paths.append(relative)
-
-    delete_paths = tuple(sorted(baseline_paths - staged_paths))
     return ApplyPlan(
         commit=commit,
         write_paths=tuple(write_paths),
-        delete_paths=delete_paths,
+        delete_paths=tuple(sorted(baseline_paths - staged_paths)),
     )
 
 
-def _assert_safe_live_path(root: Path, relative: str) -> Path:
-    if not is_allowed_relative(relative):
-        raise TransactionError(f"blocked live path in transaction: {relative}")
-    if root.is_symlink():
-        raise TransactionError("live configuration root must not be a symlink")
-    root = root.resolve()
-    current = root
-    parts = Path(relative).parts
-    for part in parts[:-1]:
-        current = current / part
-        if current.is_symlink():
-            raise TransactionError(f"refusing path through symlink: {relative}")
-        if current.exists() and not current.is_dir():
-            raise TransactionError(f"parent component is not a directory: {relative}")
-    target = root.joinpath(*parts)
-    if target.is_symlink():
-        raise TransactionError(f"refusing to replace symlink: {relative}")
-    return target
+def _live_fs(root: Path) -> LiveFilesystem:
+    return LiveFilesystem(root)
+
+
+def _as_transaction_error(exc: LiveFilesystemError) -> TransactionError:
+    return TransactionError(str(exc))
 
 
 class FileTransaction:
@@ -176,13 +149,14 @@ class FileTransaction:
             raise TransactionError("an unresolved transaction already exists")
 
         plan = _pin_staged_content(staging_dir, plan)
+        live_fs = _live_fs(source_dir)
         existed: set[str] = set()
-        for relative in plan.affected_paths:
-            target = _assert_safe_live_path(source_dir, relative)
-            if target.exists():
-                if not target.is_file():
-                    raise TransactionError(f"live target is not a regular file: {relative}")
-                existed.add(relative)
+        try:
+            for relative in plan.affected_paths:
+                if live_fs.exists_regular(relative):
+                    existed.add(relative)
+        except LiveFilesystemError as exc:
+            raise _as_transaction_error(exc) from exc
 
         root.mkdir(parents=True, exist_ok=False)
         _fsync_directory(root.parent)
@@ -193,13 +167,12 @@ class FileTransaction:
             tx.snapshot_dir.mkdir()
             _fsync_directory(tx.root)
             for relative in sorted(existed):
-                target = _assert_safe_live_path(source_dir, relative)
                 backup = tx.snapshot_dir / relative
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, backup)
-                _fsync_file(backup)
+                try:
+                    tx.snapshot_sha256[relative] = live_fs.copy_to(relative, backup)
+                except LiveFilesystemError as exc:
+                    raise _as_transaction_error(exc) from exc
                 _fsync_directory(backup.parent)
-                tx.snapshot_sha256[relative] = _sha256_file(backup)
             tx._write_journal("prepared")
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
@@ -275,7 +248,6 @@ class FileTransaction:
         self._write_journal(state)
 
     def assert_snapshot_unchanged(self) -> None:
-        """Prove pinned rollback bytes are still the prepared snapshot."""
         if not self.snapshot_sha256:
             return
         if set(self.snapshot_sha256) != self.existed:
@@ -288,25 +260,30 @@ class FileTransaction:
                 raise TransactionError(f"rollback snapshot changed after preparation: {relative}")
 
     def assert_live_unchanged(self) -> None:
-        """Prove affected live targets still match the snapshot taken at prepare()."""
         self.assert_snapshot_unchanged()
+        live_fs = _live_fs(self.source_dir)
         for relative in self.plan.affected_paths:
-            target = _assert_safe_live_path(self.source_dir, relative)
-            if relative in self.existed:
-                snapshot = self.snapshot_dir / relative
-                if not snapshot.is_file():
-                    raise TransactionError(f"snapshot missing for {relative}")
-                if not target.is_file() or target.read_bytes() != snapshot.read_bytes():
+            try:
+                exists = live_fs.exists_regular(relative)
+                if relative in self.existed:
+                    expected = self.snapshot_sha256.get(relative)
+                    if expected is None:
+                        snapshot = self.snapshot_dir / relative
+                        if not snapshot.is_file():
+                            raise TransactionError(f"snapshot missing for {relative}")
+                        expected = _sha256_file(snapshot)
+                    if not exists or live_fs.sha256(relative) != expected:
+                        raise TransactionError(
+                            f"live configuration changed during transaction preparation: {relative}"
+                        )
+                elif exists:
                     raise TransactionError(
-                        f"live configuration changed during transaction preparation: {relative}"
+                        f"live configuration created during transaction preparation: {relative}"
                     )
-            elif target.exists():
-                raise TransactionError(
-                    f"live configuration created during transaction preparation: {relative}"
-                )
+            except LiveFilesystemError as exc:
+                raise _as_transaction_error(exc) from exc
 
     def assert_staging_unchanged(self) -> None:
-        """Prove every pending write still contains the exact validated bytes."""
         expected = self.plan.write_hashes
         if set(expected) != set(self.plan.write_paths):
             raise TransactionError("transaction journal is missing staged-content hashes")
@@ -327,57 +304,36 @@ class FileTransaction:
         self.assert_staging_unchanged()
         self.assert_snapshot_unchanged()
         self._write_journal("applying")
-        for relative in self.plan.write_paths:
-            target = _assert_safe_live_path(self.source_dir, relative)
-            source = self.staging_dir / relative
-            if source.is_symlink() or not source.is_file():
-                raise TransactionError(f"staged source disappeared or changed type: {relative}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(target.name + ".syncapp-new")
-            try:
-                shutil.copy2(source, temporary)
-                if _sha256_file(temporary) != self.plan.write_hashes[relative]:
-                    raise TransactionError(f"staged content changed while copying: {relative}")
-                _durable_replace(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
-
-        for relative in self.plan.delete_paths:
-            target = _assert_safe_live_path(self.source_dir, relative)
-            if target.exists():
-                if not target.is_file():
-                    raise TransactionError(f"refusing to delete non-file: {relative}")
-                target.unlink()
-                _fsync_directory(target.parent)
+        live_fs = _live_fs(self.source_dir)
+        try:
+            for relative in self.plan.write_paths:
+                source = self.staging_dir / relative
+                live_fs.replace_from(relative, source, self.plan.write_hashes[relative])
+            for relative in self.plan.delete_paths:
+                live_fs.delete(relative)
+        except LiveFilesystemError as exc:
+            raise _as_transaction_error(exc) from exc
         self._write_journal("applied")
 
     def rollback(self, *, cleanup: bool = True) -> None:
         self.assert_snapshot_unchanged()
         self._write_journal("rolling_back")
         failures: list[str] = []
+        live_fs = _live_fs(self.source_dir)
         for relative in self.plan.affected_paths:
             try:
-                target = _assert_safe_live_path(self.source_dir, relative)
                 if relative in self.existed:
                     backup = self.snapshot_dir / relative
                     if not backup.is_file():
                         raise TransactionError(f"snapshot missing for {relative}")
-                    if self.snapshot_sha256 and _sha256_file(backup) != self.snapshot_sha256[relative]:
+                    expected = self.snapshot_sha256.get(relative)
+                    if expected is None:
+                        expected = _sha256_file(backup)
+                    elif _sha256_file(backup) != expected:
                         raise TransactionError(f"rollback snapshot changed before restore: {relative}")
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = target.with_name(target.name + ".syncapp-rollback")
-                    try:
-                        shutil.copy2(backup, temporary)
-                        if self.snapshot_sha256 and _sha256_file(temporary) != self.snapshot_sha256[relative]:
-                            raise TransactionError(f"rollback snapshot changed while copying: {relative}")
-                        _durable_replace(temporary, target)
-                    finally:
-                        temporary.unlink(missing_ok=True)
-                elif target.exists():
-                    if not target.is_file():
-                        raise TransactionError(f"rollback target is not a file: {relative}")
-                    target.unlink()
-                    _fsync_directory(target.parent)
+                    live_fs.replace_from(relative, backup, expected)
+                else:
+                    live_fs.delete(relative)
             except Exception as exc:
                 failures.append(f"{relative}: {exc}")
         if failures:
@@ -403,11 +359,9 @@ def recover_active_transaction(
     *,
     health_timeout_seconds: int = 120,
 ) -> None:
-    """Fail closed after interruption, restoring Core only if live mutation began."""
     if transaction.state in {"preparing", "prepared", "backed_up"}:
         transaction.discard()
         return
-
     transaction.rollback(cleanup=False)
     try:
         supervisor.check_core_configuration()
@@ -427,7 +381,6 @@ def execute_verified_transaction(
     *,
     health_timeout_seconds: int = 120,
 ) -> TransactionResult:
-    """Backup → Apply → semantic check → restart → Core API verify, with rollback."""
     try:
         slug = supervisor.create_homeassistant_backup(
             f"SyncApp pre-apply {transaction.plan.commit[:12]}"

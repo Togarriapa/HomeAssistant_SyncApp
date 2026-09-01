@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from .backup_retention import prune_syncapp_backups
 from .config import Settings
 from .drift import detect_live_drift
 from .git_repo import GitRepository
@@ -173,4 +174,21 @@ def apply_staged_remote(
         len(result.affected_paths),
         result.backup_slug,
     )
+
+    # Retention is post-commit hygiene only. It must never turn a verified apply
+    # into a rollback or remove the backup created for the just-completed apply.
+    if settings.backup_retention_count > 0:
+        try:
+            deleted = prune_syncapp_backups(
+                supervisor,
+                retention_count=settings.backup_retention_count,
+                current_backup_slug=result.backup_slug,
+            )
+            if deleted:
+                LOGGER.info("Pruned %d expired SyncApp backup(s)", len(deleted))
+        except Exception:
+            LOGGER.exception(
+                "SyncApp backup retention failed after successful apply; synchronization remains accepted"
+            )
+
     return result.affected_paths

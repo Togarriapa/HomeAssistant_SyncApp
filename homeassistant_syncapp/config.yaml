@@ -23,6 +23,7 @@ options:
   dry_run: true
   remote_apply_enabled: false
   verify_timeout_seconds: 120
+  backup_retention_count: 10
   git_user_name: HomeAssistant SyncApp
   git_user_email: homeassistant-syncapp@example.invalid
 schema:
@@ -33,5 +34,6 @@ schema:
   dry_run: bool
   remote_apply_enabled: bool
   verify_timeout_seconds: int(30,600)
+  backup_retention_count: int(0,100)
   git_user_name: str
   git_user_email: email

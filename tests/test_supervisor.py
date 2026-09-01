@@ -45,6 +45,32 @@ class SupervisorClientTests(unittest.TestCase):
             },
         )
 
+    def test_backup_inventory_uses_backups_endpoint(self) -> None:
+        backups = [{"slug": "one", "name": "SyncApp pre-apply one"}]
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": {"backups": backups}}]
+        )
+        self.assertEqual(client.list_backups(), backups)
+        self.assertEqual(client.calls[0][:2], ("GET", "/backups"))
+
+    def test_backup_delete_uses_specific_slug_endpoint(self) -> None:
+        client = RecordingSupervisorClient([{"result": "ok", "data": {}}])
+        client.delete_backup("safe_slug-123")
+        self.assertEqual(client.calls[0][:2], ("DELETE", "/backups/safe_slug-123"))
+
+    def test_backup_delete_rejects_untrusted_slug_characters(self) -> None:
+        client = RecordingSupervisorClient([])
+        with self.assertRaisesRegex(SupervisorError, "invalid backup slug"):
+            client.delete_backup("../other")
+        self.assertEqual(client.calls, [])
+
+    def test_backup_inventory_rejects_unexpected_shape(self) -> None:
+        client = RecordingSupervisorClient(
+            [{"result": "ok", "data": {"backups": {"not": "a list"}}}]
+        )
+        with self.assertRaisesRegex(SupervisorError, "unexpected data"):
+            client.list_backups()
+
     def test_configuration_check_raises_on_supervisor_error_envelope(self) -> None:
         client = RecordingSupervisorClient(
             [{"result": "error", "message": "configuration invalid"}]

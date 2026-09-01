@@ -17,6 +17,7 @@ Version `0.2.0` implements the complete safety pipeline for an **experimental, e
 - preserve the previous staging snapshot if a new candidate fails validation;
 - refuse remote application if allowed live configuration has drifted from the local Git HEAD;
 - create both a local rollback snapshot/journal and a synchronous Supervisor partial backup before mutation;
+- bind every staged write to a SHA-256 digest in the transaction journal and re-verify it after backup and before atomic replacement;
 - mutate only files that genuinely differ, plus genuine deletions;
 - abort without overwriting a local edit if an affected live file changes while the Supervisor backup is running;
 - copy or delete only policy-approved regular files using atomic replacement for writes;
@@ -25,7 +26,9 @@ Version `0.2.0` implements the complete safety pipeline for an **experimental, e
 - verify the Core API becomes healthy after restart through the Supervisor proxy;
 - restore the prior files and, when required, restart/verify the prior configuration after a failed apply;
 - recover interrupted transactions before performing any new Git synchronization;
-- re-fetch GitHub before adopting a successfully verified remote commit as the local baseline.
+- fail closed when post-verification crash recovery cannot prove both the adopted Git baseline and matching live managed files;
+- re-fetch GitHub before adopting a successfully verified remote commit as the local baseline;
+- retain a bounded set of SyncApp-created pre-apply backups without touching protected or unrelated backups.
 
 There is still **no direct `git pull` into `/homeassistant`**. Git checkout/reset operations only affect the isolated repository under `/data/repository`.
 
@@ -38,6 +41,7 @@ There is still **no direct `git pull` into `/homeassistant`**. Git checkout/rese
 - `dry_run`: defaults to `true`. No local push or remote live apply is performed while enabled.
 - `remote_apply_enabled`: defaults to `false`. Remote live writes require this to be `true` **and** `dry_run` to be `false`.
 - `verify_timeout_seconds`: maximum time to wait for Home Assistant Core to become healthy after a restart; default 120 seconds.
+- `backup_retention_count`: defaults to `10`. After a successful remote transaction, SyncApp may delete older **unprotected backups whose names begin with `SyncApp pre-apply `**. `0` disables cleanup. Protected backups, unrelated/manual backups, backups with incomplete metadata, and the backup created for the just-completed transaction are never selected.
 - `git_user_name` / `git_user_email`: identity used for automatically generated commits.
 
 ## Safety model
@@ -60,7 +64,9 @@ Static validation is not treated as proof that Home Assistant accepts the config
 
 Before live mutation, SyncApp records a persistent transaction journal under `/data/transaction`, snapshots every existing affected managed file, and then requests a synchronous Supervisor partial backup of Home Assistant. The backup request is allowed up to 15 minutes because no live file mutation occurs until it succeeds.
 
-Only files that differ from the staged remote candidate are included in the write set; unchanged configuration files are not rewritten. After the backup completes, SyncApp proves every affected live target still matches the snapshot taken before the backup. If a local edit appeared during that window, SyncApp discards its transaction metadata and leaves that edit untouched.
+The transaction journal records a SHA-256 digest for every staged file in the write set. After the Supervisor backup completes, SyncApp proves both that every affected live target still matches the pre-backup snapshot and that every staged source still matches its recorded digest. The copied temporary file is hashed again immediately before atomic replacement. This closes the backup-window TOCTOU path for both live and staged content.
+
+Only files that differ from the staged remote candidate are included in the write set; unchanged configuration files are not rewritten. If a local edit appeared during the backup window, SyncApp discards its transaction metadata and leaves that edit untouched.
 
 Only paths allowed by the same policy used for local-to-GitHub synchronization can be written or deleted. A symlinked live configuration root, symlink targets, and symlinked parent directories are refused. Writes use a temporary sibling file followed by atomic replacement.
 
@@ -78,7 +84,23 @@ If health verification fails after restart, the prior files are restored, checke
 
 On every synchronization cycle, unresolved transaction state is handled before any new Git activity. States that are known to precede live mutation (`preparing`, `prepared`, or `backed_up`) are discarded without restarting Core. States that may have modified live files are rolled back and the prior Core configuration is validated/restarted/health-checked before synchronization can continue.
 
+A special crash window exists after a remote commit has already passed Core health verification and been adopted as the isolated Git baseline but before manifest/journal cleanup finishes. In that state SyncApp finalizes bookkeeping only if Git HEAD equals the verified commit **and** the live managed files still match that adopted baseline. If live drift is detected, the journal is marked `verified_drift` and both automatic finalization and rollback are blocked. If the Git baseline cannot be proven, recovery also stops without mutating live files. This avoids guessing in a state where either direction could destroy newer data.
+
 An empty transaction directory left in the tiny interval before the first journal write can be cleaned automatically. A non-empty transaction directory without a journal is treated as ambiguous corruption and blocks new work rather than guessing.
+
+### Backup retention
+
+Successful remote applies create durable Supervisor partial backups as the last-resort recovery layer. To avoid unbounded storage growth, SyncApp can perform conservative post-success cleanup using `backup_retention_count`.
+
+Retention runs only **after** the transaction has been verified, adopted in Git, manifested, and completed. Cleanup failure is logged but does not convert a successful apply into a rollback. Deletion candidates must positively satisfy all of these conditions:
+
+- backup name begins with `SyncApp pre-apply `;
+- Supervisor reports `protected: false`;
+- slug is syntactically safe;
+- creation date is present and parseable;
+- the slug is not the backup created for the just-completed transaction.
+
+Protected backups, manual/unrelated backups, ambiguous metadata, and the current transaction backup fail closed and are preserved.
 
 ## Supervisor canary
 
@@ -111,23 +133,26 @@ Repository CI now covers:
 - policy and secret/runtime exclusion;
 - Git relationship states including divergence and empty repositories;
 - untrusted staging, malformed YAML/JSON/Python, Home Assistant custom tags, and Git symlink rejection;
+- staged-content SHA-256 pinning and mutation during the Supervisor backup window;
 - live-vs-HEAD drift detection;
 - minimal apply-plan deletion/write behavior;
-- Supervisor endpoint request/response contracts;
+- Supervisor endpoint request/response contracts, including backup inventory and scoped deletion;
+- conservative backup-retention selection and protected/unrelated-backup preservation;
 - Supervisor canary escalation behavior;
 - backup failure before mutation;
 - local edits occurring during the backup window;
 - semantic-check failure before restart;
 - post-restart health failure with verified rollback;
 - rollback-health failure with recovery journal preservation;
-- interrupted transaction recovery and preparation-state recovery;
+- interrupted transaction recovery, verified/adopted recovery ambiguity, and preparation-state recovery;
 - symlinked live paths/root rejection;
 - an end-to-end local Git remote update with successful baseline adoption;
 - a remote branch move during finalization causing rollback;
+- static type checking of the complete app source;
 - a real Docker image build using the version declared in app metadata.
 
 ## Experimental status
 
-The repository-level safety model is implemented and heavily failure-injected, but automated local tests cannot prove real Supervisor backup duration/semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, or Core restart/health transitions on Home Assistant OS hardware.
+The repository-level safety model is implemented and heavily failure-injected, but automated local tests cannot prove real Supervisor backup duration/semantics, bind-mounted `/homeassistant` filesystem behavior, `/core/check`, Core restart/health transitions, or backup inventory/deletion behavior on Home Assistant OS hardware.
 
 Keep `remote_apply_enabled: false` on any important instance until version `0.2.0` has passed the next milestone on a disposable/canary Home Assistant OS installation. That real-runtime canary is now the primary blocker to considering automatic remote apply production-ready.

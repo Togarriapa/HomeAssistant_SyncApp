@@ -13,8 +13,11 @@
 - Preserve unresolved rollback journals when recovery health cannot be proven.
 - Recover interrupted transactions before starting new Git synchronization, while avoiding unnecessary Core restarts for pre-apply transaction states.
 - Re-fetch the remote branch before adopting a verified commit so a branch move during backup/restart causes rollback.
+- Pin staged transaction writes with SHA-256 so staged bytes cannot change during a long Supervisor backup window.
+- Fail closed when a verified/adopted transaction has ambiguous live drift before crash-recovery bookkeeping completes.
+- Add bounded retention for old unprotected SyncApp-created pre-apply backups; protected and unrelated backups are never selected for deletion.
 - Reject symlinked live targets and symlinked live configuration roots.
-- Add unit, failure-injection, Supervisor-contract, apply-plan, and local end-to-end Git integration tests.
+- Add unit, failure-injection, Supervisor-contract, apply-plan, local end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.
 
 ## 0.1.0

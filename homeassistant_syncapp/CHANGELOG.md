@@ -26,6 +26,8 @@
 - Route remote-authoritative bootstrap through the same Stage → Validate → Backup → Apply → Verify → Rollback transaction machinery as normal remote updates rather than bypassing drift protection globally.
 - During remote-authoritative bootstrap, treat every policy-approved live file as the reversible baseline so remote omissions are journaled deletes while `secrets.yaml`, `.storage`, databases, logs, keys/certificates, and other blocked runtime files remain outside the transaction.
 - Keep both `dry_run: false` and `remote_apply_enabled: true` required before the bootstrap can mutate `/homeassistant`.
+- Treat the persisted managed-path manifest as trusted safety state: malformed JSON, wrong types, blocked paths, empty paths, and traversal paths now fail closed instead of being interpreted as an empty baseline.
+- Revalidate managed paths immediately before local mirroring/deletion so corrupted state cannot escape the isolated Git worktree through path traversal.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local/remote end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.

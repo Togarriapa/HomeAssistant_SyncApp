@@ -39,7 +39,9 @@ class LiveFilesystem:
         try:
             return os.open(self.root, flags)
         except OSError as exc:
-            raise LiveFilesystemError(f"cannot open live configuration root safely: {exc}") from exc
+            raise LiveFilesystemError(
+                f"cannot open live configuration root safely (symlinks are refused): {exc}"
+            ) from exc
 
     @staticmethod
     def _parts(relative: str) -> tuple[str, ...]:
@@ -72,7 +74,7 @@ class LiveFilesystem:
                         ) from exc
                 except OSError as exc:
                     raise LiveFilesystemError(
-                        f"refusing unsafe live parent component: {relative}: {exc}"
+                        f"refusing unsafe live parent component (symlink or non-directory): {relative}: {exc}"
                     ) from exc
                 os.close(current)
                 current = child
@@ -88,7 +90,9 @@ class LiveFilesystem:
                 except FileNotFoundError:
                     return False
                 if not stat.S_ISREG(info.st_mode):
-                    raise LiveFilesystemError(f"live target is not a regular file: {relative}")
+                    raise LiveFilesystemError(
+                        f"live target is not a regular file (symlinks are refused): {relative}"
+                    )
                 return True
         except LiveFilesystemError as exc:
             if "parent directory does not exist" in str(exc):
@@ -101,7 +105,9 @@ class LiveFilesystem:
             try:
                 fd = os.open(leaf, flags, dir_fd=parent_fd)
             except OSError as exc:
-                raise LiveFilesystemError(f"cannot read live regular file safely: {relative}: {exc}") from exc
+                raise LiveFilesystemError(
+                    f"cannot read live regular file safely (symlinks are refused): {relative}: {exc}"
+                ) from exc
             try:
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode):
@@ -111,13 +117,14 @@ class LiveFilesystem:
                 os.close(fd)
 
     def copy_to(self, relative: str, destination: Path) -> str:
-        """Copy one live regular file to a private snapshot and return its digest."""
         with self._open_parent(relative) as (parent_fd, leaf):
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             try:
                 source_fd = os.open(leaf, flags, dir_fd=parent_fd)
             except OSError as exc:
-                raise LiveFilesystemError(f"cannot snapshot live file safely: {relative}: {exc}") from exc
+                raise LiveFilesystemError(
+                    f"cannot snapshot live file safely (symlinks are refused): {relative}: {exc}"
+                ) from exc
             try:
                 info = os.fstat(source_fd)
                 if not stat.S_ISREG(info.st_mode):
@@ -181,7 +188,9 @@ class LiveFilesystem:
                 except FileNotFoundError:
                     return False
                 if not stat.S_ISREG(info.st_mode):
-                    raise LiveFilesystemError(f"refusing to delete non-file: {relative}")
+                    raise LiveFilesystemError(
+                        f"refusing to delete non-file (symlinks are refused): {relative}"
+                    )
                 try:
                     os.unlink(leaf, dir_fd=parent_fd)
                 except OSError as exc:

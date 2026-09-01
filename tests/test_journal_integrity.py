@@ -87,7 +87,7 @@ class JournalIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalIntegrityError, "writes and deletes the same path"):
                 validate_journal_payload(payload, snapshot)
 
-    def test_rejects_unknown_state_and_missing_backup_evidence(self) -> None:
+    def test_rejects_unknown_state_and_invalid_backup_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             snapshot = self._snapshot(Path(temporary))
             unknown = self._payload(version=1)
@@ -95,10 +95,10 @@ class JournalIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalIntegrityError, "unsupported state"):
                 validate_journal_payload(unknown, snapshot)
 
-            missing_backup = self._payload(version=1)
-            missing_backup["supervisor_backup"] = None
-            with self.assertRaisesRegex(JournalIntegrityError, "requires recorded Supervisor backup"):
-                validate_journal_payload(missing_backup, snapshot)
+            invalid_backup = self._payload(version=1)
+            invalid_backup["supervisor_backup"] = "../backup"
+            with self.assertRaisesRegex(JournalIntegrityError, "invalid Supervisor backup slug"):
+                validate_journal_payload(invalid_backup, snapshot)
 
     def test_preparing_state_does_not_require_complete_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

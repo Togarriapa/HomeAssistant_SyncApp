@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import json
 import os
 import time
@@ -81,6 +82,22 @@ class SupervisorClient:
             raise SupervisorError("refusing invalid backup slug")
         return quote(slug, safe="")
 
+    @staticmethod
+    def _backup_size_mb(value: object, source: str) -> Decimal:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise SupervisorError(f"Supervisor {source} did not report a valid backup size")
+        try:
+            size = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise SupervisorError(
+                f"Supervisor {source} did not report a valid backup size"
+            ) from exc
+        if not size.is_finite() or size <= 0:
+            raise SupervisorError(
+                f"Supervisor {source} did not prove the backup has non-zero size"
+            )
+        return size
+
     def check_core_configuration(self) -> dict:
         return self._unwrap(
             self._request("POST", "/core/check", {}),
@@ -150,6 +167,7 @@ class SupervisorClient:
             raise SupervisorError(
                 "Supervisor backup inventory does not prove the backup contains Home Assistant data"
             )
+        inventory_size = self._backup_size_mb(backup.get("size"), "backup inventory")
 
         details = self.backup_info(slug)
         if details.get("slug") != slug:
@@ -167,6 +185,11 @@ class SupervisorClient:
             raise SupervisorError(
                 "Supervisor backup details did not confirm Home Assistant database exclusion"
             )
+        detail_size = self._backup_size_mb(backup_size := details.get("size"), "backup details")
+        if detail_size != inventory_size:
+            raise SupervisorError(
+                "Supervisor backup inventory/detail size did not match for the created backup"
+            )
 
         evidence: dict[str, object] = {
             "slug": slug,
@@ -176,6 +199,8 @@ class SupervisorClient:
             "homeassistant_content_verified": True,
             "homeassistant_version": homeassistant_version,
             "homeassistant_database_excluded": True,
+            "backup_size_mb": str(detail_size),
+            "backup_size_verified": True,
             "detail_verified": True,
         }
         for field in ("date", "protected"):

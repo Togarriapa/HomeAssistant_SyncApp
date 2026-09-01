@@ -123,6 +123,66 @@ class SupervisorClient:
             f"backup information {slug}",
         )
 
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]:
+        """Fail closed unless Supervisor proves the requested HA backup exists."""
+        matches = [item for item in self.list_backups() if item.get("slug") == slug]
+        if len(matches) != 1:
+            raise SupervisorError(
+                "Supervisor backup inventory did not contain exactly one entry for "
+                f"newly created backup slug {slug!r}"
+            )
+
+        backup = matches[0]
+        if backup.get("name") != expected_name:
+            raise SupervisorError(
+                "Supervisor backup inventory entry name did not match the backup request"
+            )
+        if backup.get("type") != "partial":
+            raise SupervisorError(
+                "Supervisor backup inventory entry was not the requested partial backup"
+            )
+        content = backup.get("content")
+        if not isinstance(content, dict) or content.get("homeassistant") is not True:
+            raise SupervisorError(
+                "Supervisor backup inventory does not prove the backup contains Home Assistant data"
+            )
+
+        details = self.backup_info(slug)
+        if details.get("slug") != slug:
+            raise SupervisorError("Supervisor backup detail slug did not match the created backup")
+        if details.get("name") != expected_name:
+            raise SupervisorError("Supervisor backup detail name did not match the backup request")
+        if details.get("type") != "partial":
+            raise SupervisorError("Supervisor backup details did not report a partial backup")
+        homeassistant_version = details.get("homeassistant")
+        if not isinstance(homeassistant_version, str) or not homeassistant_version.strip():
+            raise SupervisorError(
+                "Supervisor backup details did not prove Home Assistant content is present"
+            )
+        if details.get("homeassistant_exclude_database") is not True:
+            raise SupervisorError(
+                "Supervisor backup details did not confirm Home Assistant database exclusion"
+            )
+
+        evidence: dict[str, object] = {
+            "slug": slug,
+            "name_matches_request": True,
+            "type": "partial",
+            "inventory_verified": True,
+            "homeassistant_content_verified": True,
+            "homeassistant_version": homeassistant_version,
+            "homeassistant_database_excluded": True,
+            "detail_verified": True,
+        }
+        for field in ("date", "protected"):
+            if field in backup:
+                evidence[field] = backup[field]
+        return evidence
+
     def delete_backup(self, slug: str) -> None:
         encoded = self._safe_backup_slug(slug)
         self._unwrap(

@@ -16,6 +16,13 @@ class MutatingBackupSupervisor:
         self.live_file.write_text("user_edit: true\n", encoding="utf-8")
         return "backup-after-user-edit"
 
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]:
+        return {"slug": slug, "detail_verified": True}
+
     def check_core_configuration(self) -> dict:
         self.checks += 1
         return {}

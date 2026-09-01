@@ -23,7 +23,7 @@ The remote-to-local workflow is:
 
 **Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Roll back if necessary**
 
-Remote Git data is staged outside `/homeassistant`, validated, and—only when explicitly enabled—applied through a journaled transaction with a Supervisor backup, Home Assistant configuration check, restart health verification, and rollback path. Live configuration drift blocks ordinary remote apply rather than being overwritten silently.
+Remote Git data is staged outside `/homeassistant`, validated, and—only when explicitly enabled—applied through a journaled transaction with a Supervisor backup, Home Assistant configuration check, restart health verification, and rollback path. A returned Supervisor backup identifier is not enough to authorize mutation: SyncApp verifies the newly created partial backup through inventory and backup-detail evidence before the transaction may enter `backed_up` or apply any live file. See `homeassistant_syncapp/PRE_APPLY_BACKUP_SAFETY.md`. Live configuration drift blocks ordinary remote apply rather than being overwritten silently.
 
 Before a staged remote candidate can enter the Backup/Apply transaction, SyncApp also enforces a destructive-deletion budget. By default, a candidate is rejected if it deletes more than 25 policy-approved files or more than 50% of the current managed baseline. This prevents a mistaken or compromised but syntactically valid remote commit from silently converging Home Assistant to a drastically reduced configuration. See `homeassistant_syncapp/REMOTE_DELETION_SAFETY.md`.
 

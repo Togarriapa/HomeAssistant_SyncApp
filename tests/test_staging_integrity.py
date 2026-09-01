@@ -21,6 +21,13 @@ class MutatingBackupSupervisor:
         self.staged_file.write_text("attacker: changed\n", encoding="utf-8")
         return "backup-123"
 
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]:
+        return {"slug": slug, "detail_verified": True}
+
     def check_core_configuration(self) -> dict:
         self.checks += 1
         return {}

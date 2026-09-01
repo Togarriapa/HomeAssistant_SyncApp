@@ -75,6 +75,112 @@ class SupervisorClientTests(unittest.TestCase):
             client.backup_info("../other")
         self.assertEqual(client.calls, [])
 
+    def test_verify_homeassistant_backup_cross_checks_inventory_and_details(self) -> None:
+        name = "SyncApp pre-apply abcdef123456"
+        client = RecordingSupervisorClient(
+            [
+                {
+                    "result": "ok",
+                    "data": {
+                        "backups": [
+                            {
+                                "slug": "backup-123",
+                                "name": name,
+                                "type": "partial",
+                                "date": "2026-09-01T22:00:00+00:00",
+                                "protected": False,
+                                "content": {"homeassistant": True},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "result": "ok",
+                    "data": {
+                        "slug": "backup-123",
+                        "name": name,
+                        "type": "partial",
+                        "homeassistant": "2026.9.0",
+                        "homeassistant_exclude_database": True,
+                    },
+                },
+            ]
+        )
+
+        evidence = client.verify_homeassistant_backup("backup-123", name)
+
+        self.assertEqual(
+            client.calls[0][:2],
+            ("GET", "/backups"),
+        )
+        self.assertEqual(
+            client.calls[1][:2],
+            ("GET", "/backups/backup-123/info"),
+        )
+        self.assertTrue(evidence["inventory_verified"])
+        self.assertTrue(evidence["detail_verified"])
+        self.assertTrue(evidence["homeassistant_content_verified"])
+        self.assertTrue(evidence["homeassistant_database_excluded"])
+        self.assertEqual(evidence["homeassistant_version"], "2026.9.0")
+
+    def test_verify_homeassistant_backup_rejects_missing_homeassistant_content(self) -> None:
+        name = "SyncApp pre-apply abcdef123456"
+        client = RecordingSupervisorClient(
+            [
+                {
+                    "result": "ok",
+                    "data": {
+                        "backups": [
+                            {
+                                "slug": "backup-123",
+                                "name": name,
+                                "type": "partial",
+                                "content": {"homeassistant": False},
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(SupervisorError, "contains Home Assistant data"):
+            client.verify_homeassistant_backup("backup-123", name)
+
+        self.assertEqual(len(client.calls), 1)
+
+    def test_verify_homeassistant_backup_rejects_database_inclusion(self) -> None:
+        name = "SyncApp pre-apply abcdef123456"
+        client = RecordingSupervisorClient(
+            [
+                {
+                    "result": "ok",
+                    "data": {
+                        "backups": [
+                            {
+                                "slug": "backup-123",
+                                "name": name,
+                                "type": "partial",
+                                "content": {"homeassistant": True},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "result": "ok",
+                    "data": {
+                        "slug": "backup-123",
+                        "name": name,
+                        "type": "partial",
+                        "homeassistant": "2026.9.0",
+                        "homeassistant_exclude_database": False,
+                    },
+                },
+            ]
+        )
+
+        with self.assertRaisesRegex(SupervisorError, "database exclusion"):
+            client.verify_homeassistant_backup("backup-123", name)
+
     def test_backup_delete_uses_specific_slug_endpoint(self) -> None:
         client = RecordingSupervisorClient([{"result": "ok", "data": {}}])
         client.delete_backup("safe_slug-123")

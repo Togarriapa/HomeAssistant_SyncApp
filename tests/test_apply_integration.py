@@ -34,6 +34,7 @@ class FakeSupervisor:
     def __init__(self, health_hook=None):
         self.health_hook = health_hook
         self.backups = 0
+        self.backup_verifications = 0
         self.checks = 0
         self.restarts = 0
         self.health_checks = 0
@@ -41,6 +42,14 @@ class FakeSupervisor:
     def create_homeassistant_backup(self, name: str) -> str:
         self.backups += 1
         return "backup-integration"
+
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]:
+        self.backup_verifications += 1
+        return {"slug": slug, "detail_verified": True}
 
     def check_core_configuration(self) -> dict:
         self.checks += 1
@@ -147,6 +156,7 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertEqual(self.repository.relationship(), "equal")
         self.assertFalse(self.transaction.exists())
         self.assertEqual(supervisor.backups, 1)
+        self.assertEqual(supervisor.backup_verifications, 1)
         self.assertEqual(supervisor.restarts, 1)
         self.assertIn("configuration.yaml", affected)
         self.assertIn("obsolete.yaml", affected)
@@ -168,6 +178,7 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertFalse((self.live / "obsolete.yaml").exists())
         self.assertTrue(self.transaction.exists())
         self.assertFalse(self.manifest.exists())
+        self.assertEqual(supervisor.backup_verifications, 1)
         self.assertEqual(supervisor.restarts, 1)
         self.assertEqual(supervisor.health_checks, 1)
 
@@ -194,6 +205,7 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertEqual((self.live / "configuration.yaml").read_text(), "version: new\n")
         self.assertTrue(self.manifest.exists())
         self.assertTrue(self.transaction.exists())
+        self.assertEqual(supervisor.backup_verifications, 1)
         self.assertEqual(supervisor.restarts, 1)
         self.assertEqual(supervisor.health_checks, 1)
 
@@ -226,6 +238,7 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertTrue(self.manifest.exists())
         self.assertFalse(self.transaction.exists())
         self.assertEqual(supervisor.backups, 1)
+        self.assertEqual(supervisor.backup_verifications, 1)
         self.assertEqual(supervisor.checks, 1)
         self.assertEqual(supervisor.restarts, 1)
         self.assertEqual(supervisor.health_checks, 1)
@@ -254,6 +267,7 @@ class ApplyIntegrationTests(unittest.TestCase):
         self.assertFalse((self.live / "automations.yaml").exists())
         self.assertFalse(self.transaction.exists())
         self.assertNotEqual(self.repository.remote_head(), candidate)
+        self.assertEqual(supervisor.backup_verifications, 1)
         self.assertEqual(supervisor.restarts, 2)
         self.assertEqual(supervisor.health_checks, 2)
 
@@ -269,6 +283,7 @@ class ApplyIntegrationTests(unittest.TestCase):
 
         self.assertEqual((self.live / "configuration.yaml").read_text(), "locally edited: true\n")
         self.assertEqual(supervisor.backups, 0)
+        self.assertEqual(supervisor.backup_verifications, 0)
         self.assertFalse(self.transaction.exists())
 
 

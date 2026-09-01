@@ -30,6 +30,9 @@
 - Keep both `dry_run: false` and `remote_apply_enabled: true` required before the bootstrap can mutate `/homeassistant`.
 - Treat the persisted managed-path manifest as trusted safety state: malformed JSON, wrong types, blocked paths, empty paths, and traversal paths now fail closed instead of being interpreted as an empty baseline.
 - Revalidate managed paths immediately before local mirroring/deletion so corrupted state cannot escape the isolated Git worktree through path traversal.
+- Expose `homeassistant_repository_url` as the explicit managed Home Assistant read/write target, separate from the SyncApp source repository.
+- Reject using `Togarriapa/HomeAssistant_SyncApp` itself as the managed Home Assistant repository, reject malformed multi-component GitHub targets, and reject conflicting legacy/new target options.
+- Retain deprecated `repository_url` only as an upgrade compatibility alias; it is no longer presented as the default add-on option.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local/remote end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.

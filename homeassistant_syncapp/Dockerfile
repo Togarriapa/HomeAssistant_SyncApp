@@ -6,6 +6,7 @@ ARG BUILD_ARCH
 
 RUN apk add --no-cache \
     git \
+    py3-yaml \
     python3
 
 COPY app /app

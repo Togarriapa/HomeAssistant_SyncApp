@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
@@ -13,6 +14,14 @@ LOGGER = logging.getLogger(__name__)
 
 class GitError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class GitTreeEntry:
+    mode: str
+    object_type: str
+    object_id: str
+    path: str
 
 
 class GitRepository:
@@ -61,6 +70,20 @@ class GitRepository:
         )
         if check and process.returncode != 0:
             detail = process.stderr.strip() or process.stdout.strip()
+            raise GitError(f"git {' '.join(args)} failed: {detail}")
+        return process
+
+    def _run_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+        process = subprocess.run(
+            ["git", *args],
+            cwd=self.path,
+            env=self._environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if check and process.returncode != 0:
+            detail = (process.stderr or process.stdout).decode("utf-8", errors="replace").strip()
             raise GitError(f"git {' '.join(args)} failed: {detail}")
         return process
 
@@ -139,6 +162,36 @@ class GitRepository:
         return self._run(
             "merge-base", "--is-ancestor", older, newer, check=False
         ).returncode == 0
+
+    def remote_tree_entries(self) -> list[GitTreeEntry]:
+        remote = self.remote_head()
+        if remote is None:
+            return []
+        raw = self._run_bytes("ls-tree", "-r", "-z", remote).stdout
+        entries: list[GitTreeEntry] = []
+        for record in raw.split(b"\0"):
+            if not record:
+                continue
+            metadata, separator, raw_path = record.partition(b"\t")
+            if not separator:
+                raise GitError("unexpected git ls-tree output")
+            parts = metadata.decode("ascii").split()
+            if len(parts) != 3:
+                raise GitError("unexpected git ls-tree metadata")
+            mode, object_type, object_id = parts
+            path = raw_path.decode("utf-8")
+            entries.append(GitTreeEntry(mode, object_type, object_id, path))
+        return entries
+
+    def blob_size(self, object_id: str) -> int:
+        output = self._run("cat-file", "-s", object_id).stdout.strip()
+        try:
+            return int(output)
+        except ValueError as exc:
+            raise GitError(f"invalid blob size for {object_id}") from exc
+
+    def read_blob(self, object_id: str) -> bytes:
+        return self._run_bytes("cat-file", "blob", object_id).stdout
 
     def add_all(self) -> None:
         self._run("add", "-A")

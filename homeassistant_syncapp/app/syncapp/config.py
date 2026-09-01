@@ -21,6 +21,7 @@ class Settings:
     git_user_email: str
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
+    staging_dir: Path = Path("/data/staging")
     manifest_path: Path = Path("/data/managed_paths.json")
 
     @classmethod

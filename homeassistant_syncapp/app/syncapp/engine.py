@@ -6,6 +6,7 @@ from .config import Settings
 from .git_repo import GitRepository
 from .mirror import load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
+from .staging import StagingValidationError, stage_remote_configuration
 
 
 LOGGER = logging.getLogger(__name__)
@@ -28,12 +29,32 @@ class SyncEngine:
         self.repository.fetch()
         relationship = self.repository.relationship()
 
-        if relationship in {"remote_only", "remote_ahead", "diverged"}:
-            LOGGER.warning(
-                "Git state is %s on branch %s. Remote-to-local apply is disabled in "
-                "this milestone; refusing to create or push a local commit.",
-                relationship,
+        if relationship == "diverged":
+            LOGGER.error(
+                "Git state is diverged on branch %s; refusing both push and remote apply",
                 self.settings.branch,
+            )
+            return
+
+        if relationship in {"remote_only", "remote_ahead"}:
+            try:
+                staged = stage_remote_configuration(
+                    self.repository,
+                    self.settings.staging_dir,
+                )
+            except StagingValidationError as exc:
+                LOGGER.error(
+                    "Rejected remote commit during staging validation: %s",
+                    exc,
+                )
+                return
+
+            LOGGER.warning(
+                "Remote commit %s passed staging validation (%d files, %d bytes). "
+                "Live apply remains disabled until backup/apply/verify/rollback is implemented.",
+                staged.commit,
+                staged.file_count,
+                staged.total_bytes,
             )
             return
 

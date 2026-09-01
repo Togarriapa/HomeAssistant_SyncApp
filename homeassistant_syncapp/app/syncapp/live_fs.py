@@ -28,6 +28,14 @@ def _sha256_fd(fd: int) -> str:
     return digest.hexdigest()
 
 
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class LiveFilesystem:
     """Descriptor-relative access to the live Home Assistant configuration tree."""
 
@@ -136,10 +144,15 @@ class LiveFilesystem:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with os.fdopen(os.dup(source_fd), "rb") as source_handle, destination.open("xb") as target:
                     shutil.copyfileobj(source_handle, target, length=1024 * 1024)
+                    os.fchmod(target.fileno(), stat.S_IMODE(info.st_mode))
                     target.flush()
                     os.fsync(target.fileno())
-                os.chmod(destination, stat.S_IMODE(info.st_mode))
-                return _sha256_fd(source_fd)
+                snapshot_digest = _sha256_path(destination)
+                if _sha256_fd(source_fd) != snapshot_digest:
+                    raise LiveFilesystemError(
+                        f"live configuration changed while rollback snapshot was being captured: {relative}"
+                    )
+                return snapshot_digest
             finally:
                 os.close(source_fd)
 

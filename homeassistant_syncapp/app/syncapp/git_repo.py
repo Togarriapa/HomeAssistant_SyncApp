@@ -4,6 +4,7 @@ import base64
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 
@@ -49,9 +50,8 @@ class GitRepository:
         cwd: Path | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        command = ["git", *args]
         process = subprocess.run(
-            command,
+            ["git", *args],
             cwd=cwd or self.path,
             env=self._environment(),
             text=True,
@@ -70,7 +70,6 @@ class GitRepository:
             if self.path.exists():
                 for child in self.path.iterdir():
                     if child.is_dir():
-                        import shutil
                         shutil.rmtree(child)
                     else:
                         child.unlink()
@@ -117,10 +116,29 @@ class GitRepository:
         )
         return result.stdout.strip() if result.returncode == 0 else None
 
-    def remote_changed(self) -> bool:
+    def relationship(self) -> str:
+        """Describe local HEAD relative to the configured remote branch."""
         local = self.head()
         remote = self.remote_head()
-        return remote is not None and local != remote
+
+        if local is None and remote is None:
+            return "empty"
+        if remote is None:
+            return "local_only"
+        if local is None:
+            return "remote_only"
+        if local == remote:
+            return "equal"
+        if self._is_ancestor(local, remote):
+            return "remote_ahead"
+        if self._is_ancestor(remote, local):
+            return "local_ahead"
+        return "diverged"
+
+    def _is_ancestor(self, older: str, newer: str) -> bool:
+        return self._run(
+            "merge-base", "--is-ancestor", older, newer, check=False
+        ).returncode == 0
 
     def add_all(self) -> None:
         self._run("add", "-A")

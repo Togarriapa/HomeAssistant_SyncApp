@@ -208,6 +208,18 @@ class GitRepository:
         result = self._run("diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")
         return [line for line in result.stdout.splitlines() if line]
 
+    def tracked_paths(self) -> list[str]:
+        raw = self._run_bytes("ls-files", "-z").stdout
+        paths: list[str] = []
+        for item in raw.split(b"\0"):
+            if not item:
+                continue
+            try:
+                paths.append(item.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise GitError("tracked file path is not valid UTF-8") from exc
+        return paths
+
     def discard_worktree_changes(self) -> None:
         """Drop rejected/dry-run candidates only from the isolated /data repository."""
         if self.head() is not None:

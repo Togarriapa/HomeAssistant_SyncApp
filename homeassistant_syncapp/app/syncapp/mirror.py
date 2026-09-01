@@ -4,20 +4,47 @@ import json
 from pathlib import Path
 import shutil
 
-from .policy import collect_allowed_files
+from .policy import collect_allowed_files, is_allowed_relative
+
+
+class ManifestError(RuntimeError):
+    """Raised when persisted managed-path state cannot be trusted safely."""
 
 
 def load_manifest(path: Path) -> set[str]:
     if not path.exists():
         return set()
+
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    return {str(item) for item in value if isinstance(item, str)}
+    except OSError as exc:
+        raise ManifestError(f"managed-path manifest could not be read: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ManifestError("managed-path manifest is not valid JSON") from exc
+
+    if not isinstance(value, list):
+        raise ManifestError("managed-path manifest must be a JSON array")
+
+    files: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ManifestError("managed-path manifest entries must all be strings")
+        if not item or not is_allowed_relative(item):
+            raise ManifestError(
+                f"managed-path manifest contains an unsafe or invalid path: {item!r}"
+            )
+        files.add(item)
+
+    return files
 
 
 def save_manifest(path: Path, files: set[str]) -> None:
+    unsafe = sorted(item for item in files if not item or not is_allowed_relative(item))
+    if unsafe:
+        raise ManifestError(
+            "refusing to persist unsafe managed paths: " + ", ".join(repr(item) for item in unsafe)
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(sorted(files), indent=2) + "\n", encoding="utf-8")
@@ -29,6 +56,15 @@ def mirror_local_configuration(
     destination: Path,
     previous_managed: set[str],
 ) -> set[str]:
+    unsafe_previous = sorted(
+        item for item in previous_managed if not item or not is_allowed_relative(item)
+    )
+    if unsafe_previous:
+        raise ManifestError(
+            "refusing to mirror from unsafe managed paths: "
+            + ", ".join(repr(item) for item in unsafe_previous)
+        )
+
     current = collect_allowed_files(source)
 
     for relative in sorted(current):

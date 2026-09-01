@@ -59,6 +59,39 @@ def _environment_evidence(client: SupervisorClient) -> dict[str, object]:
     }
 
 
+def _verify_created_backup(
+    client: SupervisorClient,
+    *,
+    slug: str,
+    expected_name: str,
+) -> dict[str, object]:
+    """Prove the synchronous backup is visible in Supervisor inventory."""
+    matches = [item for item in client.list_backups() if item.get("slug") == slug]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Supervisor backup inventory did not contain exactly one entry for "
+            f"newly created canary backup slug {slug!r}"
+        )
+
+    backup = matches[0]
+    name = backup.get("name")
+    if name != expected_name:
+        raise RuntimeError(
+            "Supervisor backup inventory entry name did not match the canary request: "
+            f"expected {expected_name!r}, got {name!r}"
+        )
+
+    evidence: dict[str, object] = {
+        "slug": slug,
+        "name_matches_request": True,
+        "inventory_verified": True,
+    }
+    for field in ("date", "protected", "type"):
+        if field in backup:
+            evidence[field] = backup[field]
+    return evidence
+
+
 def _canary_temp_names(root_fd: int) -> tuple[str, ...]:
     names = (
         name
@@ -274,8 +307,12 @@ def run_canary(
 
     if create_backup:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        result["backup_slug"] = client.create_homeassistant_backup(
-            f"SyncApp canary {stamp}"
+        backup_name = f"SyncApp canary {stamp}"
+        backup_slug = client.create_homeassistant_backup(backup_name)
+        result["backup"] = _verify_created_backup(
+            client,
+            slug=backup_slug,
+            expected_name=backup_name,
         )
 
     if restart:
@@ -295,7 +332,7 @@ def main() -> int:
     parser.add_argument(
         "--backup",
         action="store_true",
-        help="also create a synchronous partial Home Assistant backup",
+        help="also create and inventory-verify a synchronous partial Home Assistant backup",
     )
     parser.add_argument(
         "--restart",

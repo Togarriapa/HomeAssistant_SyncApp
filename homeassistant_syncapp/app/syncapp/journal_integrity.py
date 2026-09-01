@@ -116,7 +116,7 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
         digest = data.get("integrity_sha256")
         if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
             raise JournalIntegrityError("transaction journal integrity digest is missing or invalid")
-        if not hashlib.compare_digest(digest, journal_digest(data)):
+        if digest != journal_digest(data):
             raise JournalIntegrityError("transaction journal integrity digest does not match")
 
     state = data.get("state")

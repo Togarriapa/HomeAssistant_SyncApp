@@ -55,7 +55,9 @@ python3 /app/canary.py --filesystem --backup
 python3 /app/canary.py --filesystem --backup --restart --timeout 120
 ```
 
-The backup call creates a synchronous partial Home Assistant backup. The restart variant explicitly restarts Core and waits for the API to become healthy. Retain the reported backup slug with the canary evidence.
+The backup call creates a synchronous partial Home Assistant backup and then immediately reads Supervisor backup inventory. Success requires exactly one inventory entry with the returned slug and the exact canary backup name that was requested. The JSON `backup` evidence includes the slug, `inventory_verified: true`, `name_matches_request: true`, and selected non-sensitive inventory metadata when Supervisor supplies it. The canary never deletes a backup as part of this proof.
+
+The restart variant performs the same backup creation/inventory proof **before** explicitly restarting Core and waiting for the API to become healthy. If the newly created slug is absent, duplicated, or associated with a different name, the canary fails before issuing the restart so a questionable backup cannot be treated as established recovery evidence.
 
 ## 5. Full transaction canary
 
@@ -65,4 +67,4 @@ Only after all preceding levels pass should the disposable instance test an actu
 
 Keep both `dry_run: true` and `remote_apply_enabled: false` while establishing the initial canary evidence. Enable live remote mutation only on the disposable instance and only for the issue #4 acceptance matrix.
 
-The canary helper is not a substitute for that full transaction exercise. In particular, the temporary-file write probe proves descriptor-relative replace/unlink/fsync support but does not prove Supervisor backup semantics, `/core/check` behavior after a recoverable update, restart health transitions, transaction recovery after process/power interruption, or exact Git adoption.
+The canary helper is not a substitute for that full transaction exercise. In particular, the temporary-file write probe proves descriptor-relative replace/unlink/fsync support, while the backup probe proves creation plus inventory visibility. Neither proves `/core/check` behavior after a recoverable update, restart health transitions, transaction recovery after process/power interruption, or exact Git adoption.

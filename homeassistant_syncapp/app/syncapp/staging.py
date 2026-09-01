@@ -9,7 +9,7 @@ import shutil
 import yaml
 
 from .git_repo import GitRepository, GitTreeEntry
-from .policy import is_allowed_relative
+from .policy import collect_allowed_files, is_allowed_relative
 
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -41,6 +41,12 @@ _HomeAssistantLoader.add_multi_constructor("!", _unknown_tag)
 @dataclass(frozen=True, slots=True)
 class StagingResult:
     commit: str
+    file_count: int
+    total_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryValidationResult:
     file_count: int
     total_bytes: int
 
@@ -87,6 +93,28 @@ def _validate_file(path: Path, relative: str) -> None:
             raise StagingValidationError(f"invalid Python syntax in {relative}: {exc}") from exc
 
 
+def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
+    """Validate exactly the policy-allowed files in a materialized configuration tree."""
+    files = sorted(collect_allowed_files(root))
+    total_bytes = 0
+    for relative in files:
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            raise StagingValidationError(f"configuration path is not a regular file: {relative}")
+        size = path.stat().st_size
+        if size > MAX_FILE_BYTES:
+            raise StagingValidationError(
+                f"configuration path {relative!r} exceeds {MAX_FILE_BYTES} byte limit"
+            )
+        total_bytes += size
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise StagingValidationError(
+                f"configuration tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
+            )
+        _validate_file(path, relative)
+    return DirectoryValidationResult(file_count=len(files), total_bytes=total_bytes)
+
+
 def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> StagingResult:
     """Materialize a validated remote tree outside the live HA configuration."""
     remote = repository.remote_head()
@@ -126,7 +154,12 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
                     f"blob size changed while staging {entry.path!r}"
                 )
             destination.write_bytes(content)
-            _validate_file(destination, entry.path)
+
+        validated = validate_configuration_directory(temporary)
+        if validated.file_count != len(planned) or validated.total_bytes != total_bytes:
+            raise StagingValidationError(
+                "materialized staging tree does not match validated Git tree"
+            )
 
         if staging_dir.exists():
             shutil.rmtree(staging_dir)

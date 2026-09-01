@@ -16,6 +16,9 @@
 - Pin staged transaction writes with SHA-256 so staged bytes cannot change during a long Supervisor backup window.
 - Fail closed when a verified/adopted transaction has ambiguous live drift before crash-recovery bookkeeping completes.
 - Add bounded retention for old unprotected SyncApp-created pre-apply backups; protected and unrelated backups are never selected for deletion.
+- Validate local-to-GitHub candidates with the same static size/syntax rules and live Supervisor `/core/check` before creating commits.
+- Refuse local commits when the existing Git index tracks any blocked secret/runtime path.
+- Discard rejected and dry-run local candidates from the isolated Git worktree so staged state cannot leak into later cycles.
 - Reject symlinked live targets and symlinked live configuration roots.
 - Add unit, failure-injection, Supervisor-contract, apply-plan, local end-to-end Git integration, and static type-check coverage.
 - Build the Docker image using the version declared in app metadata.

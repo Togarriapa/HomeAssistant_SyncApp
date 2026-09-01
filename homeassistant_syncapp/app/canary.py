@@ -3,8 +3,157 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
+import secrets
+import stat
 
+from syncapp.live_fs import LiveFilesystem, LiveFilesystemError
 from syncapp.supervisor import SupervisorClient
+
+
+DEFAULT_LIVE_ROOT = Path("/homeassistant")
+
+
+def run_filesystem_canary(
+    root: Path = DEFAULT_LIVE_ROOT,
+    *,
+    probe_path: str = "configuration.yaml",
+    write_probe: bool = False,
+) -> dict[str, object]:
+    """Probe the live HA mount without touching configuration content.
+
+    The default probe is read-only.  The explicit write probe creates only
+    randomly named ``*.tmp`` files, which are blocked by SyncApp policy, and
+    removes them before returning.
+    """
+    if root.is_symlink():
+        raise RuntimeError("live configuration root must not be a symlink")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise RuntimeError("platform lacks O_NOFOLLOW/O_DIRECTORY support")
+
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        root_fd = os.open(root, root_flags)
+    except OSError as exc:
+        raise RuntimeError(f"cannot open live configuration root safely: {exc}") from exc
+
+    try:
+        root_info = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise RuntimeError("live configuration root is not a directory")
+
+        # Exercise dir_fd and no-follow support on the actual mounted root.
+        dot_fd = os.open(".", root_flags, dir_fd=root_fd)
+        try:
+            dot_info = os.fstat(dot_fd)
+            if not stat.S_ISDIR(dot_info.st_mode):
+                raise RuntimeError("descriptor-relative live root probe is not a directory")
+        finally:
+            os.close(dot_fd)
+        os.stat(".", dir_fd=root_fd, follow_symlinks=False)
+
+        filesystem = LiveFilesystem(root)
+        probe_exists = filesystem.exists_regular(probe_path)
+        probe_read_verified = False
+        if probe_exists:
+            digest = filesystem.sha256(probe_path)
+            probe_read_verified = len(digest) == 64
+
+        result: dict[str, object] = {
+            "root_opened_no_follow": True,
+            "descriptor_relative_open": True,
+            "descriptor_relative_stat": True,
+            "probe_path": probe_path,
+            "probe_path_exists_regular": probe_exists,
+            "probe_path_read_verified": probe_read_verified,
+            "write_probe": False,
+        }
+
+        if write_probe:
+            result.update(_run_filesystem_write_probe(root_fd))
+        return result
+    except LiveFilesystemError as exc:
+        raise RuntimeError(f"live filesystem canary failed: {exc}") from exc
+    finally:
+        os.close(root_fd)
+
+
+def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
+    """Prove descriptor-relative replace/unlink/fsync on the real live mount."""
+    token = secrets.token_hex(12)
+    source_name = f".syncapp-canary-{token}.tmp"
+    destination_name = f".syncapp-canary-{token}-replaced.tmp"
+    payload = secrets.token_bytes(64)
+    created: set[str] = set()
+
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        source_fd = os.open(source_name, flags, 0o600, dir_fd=root_fd)
+        created.add(source_name)
+        try:
+            view = memoryview(payload)
+            while view:
+                written = os.write(source_fd, view)
+                if written <= 0:
+                    raise RuntimeError("filesystem write probe made no forward progress")
+                view = view[written:]
+            os.fsync(source_fd)
+        finally:
+            os.close(source_fd)
+
+        os.replace(
+            source_name,
+            destination_name,
+            src_dir_fd=root_fd,
+            dst_dir_fd=root_fd,
+        )
+        created.discard(source_name)
+        created.add(destination_name)
+        os.fsync(root_fd)
+
+        read_fd = os.open(destination_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            observed = bytearray()
+            while len(observed) < len(payload):
+                chunk = os.read(read_fd, len(payload) - len(observed))
+                if not chunk:
+                    break
+                observed.extend(chunk)
+            if bytes(observed) != payload:
+                raise RuntimeError("descriptor-relative replacement verification mismatch")
+        finally:
+            os.close(read_fd)
+
+        os.unlink(destination_name, dir_fd=root_fd)
+        created.discard(destination_name)
+        os.fsync(root_fd)
+        return {
+            "write_probe": True,
+            "descriptor_relative_replace": True,
+            "descriptor_relative_unlink": True,
+            "file_fsync": True,
+            "directory_fsync": True,
+            "write_probe_cleanup": True,
+        }
+    finally:
+        cleanup_error: OSError | None = None
+        for name in tuple(created):
+            try:
+                os.unlink(name, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                cleanup_error = exc
+        if created:
+            try:
+                os.fsync(root_fd)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
+        if cleanup_error is not None:
+            raise RuntimeError(
+                f"filesystem canary cleanup failed; inspect blocked .syncapp-canary-*.tmp files: {cleanup_error}"
+            ) from cleanup_error
 
 
 def run_canary(
@@ -13,13 +162,24 @@ def run_canary(
     create_backup: bool = False,
     restart: bool = False,
     timeout_seconds: int = 120,
+    filesystem: bool = False,
+    filesystem_write_probe: bool = False,
+    filesystem_root: Path = DEFAULT_LIVE_ROOT,
+    filesystem_path: str = "configuration.yaml",
 ) -> dict[str, object]:
-    """Exercise the real Supervisor contract without changing HA config files."""
+    """Exercise real integration contracts without modifying HA config files."""
     result: dict[str, object] = {
         "core_info": client.core_info(),
         "core_api": client.core_api_health(),
         "configuration_check": client.check_core_configuration(),
     }
+
+    if filesystem or filesystem_write_probe:
+        result["filesystem"] = run_filesystem_canary(
+            filesystem_root,
+            probe_path=filesystem_path,
+            write_probe=filesystem_write_probe,
+        )
 
     if create_backup:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -37,8 +197,8 @@ def run_canary(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate HomeAssistant SyncApp's Supervisor integration without modifying "
-            "Home Assistant configuration files."
+            "Validate HomeAssistant SyncApp's Supervisor and filesystem integration "
+            "without modifying Home Assistant configuration files."
         )
     )
     parser.add_argument(
@@ -50,6 +210,24 @@ def main() -> int:
         "--restart",
         action="store_true",
         help="explicitly restart Home Assistant Core and wait for API health",
+    )
+    parser.add_argument(
+        "--filesystem",
+        action="store_true",
+        help="read-only probe of descriptor-relative access to /homeassistant",
+    )
+    parser.add_argument(
+        "--filesystem-write-probe",
+        action="store_true",
+        help=(
+            "explicitly create/replace/delete only a blocked random *.tmp file under "
+            "/homeassistant to verify descriptor-relative mutation and fsync support"
+        ),
+    )
+    parser.add_argument(
+        "--filesystem-path",
+        default="configuration.yaml",
+        help="policy-approved regular file to read through the no-follow filesystem layer",
     )
     parser.add_argument(
         "--timeout",
@@ -66,6 +244,9 @@ def main() -> int:
         create_backup=args.backup,
         restart=args.restart,
         timeout_seconds=args.timeout,
+        filesystem=args.filesystem,
+        filesystem_write_probe=args.filesystem_write_probe,
+        filesystem_path=args.filesystem_path,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

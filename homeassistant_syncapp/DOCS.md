@@ -17,6 +17,8 @@ Version `0.2.0` implements the complete safety pipeline for an **experimental, e
 - preserve the previous staging snapshot if a new candidate fails validation;
 - refuse remote application if allowed live configuration has drifted from the local Git HEAD;
 - create both a local rollback snapshot/journal and a synchronous Supervisor partial backup before mutation;
+- mutate only files that genuinely differ, plus genuine deletions;
+- abort without overwriting a local edit if an affected live file changes while the Supervisor backup is running;
 - copy or delete only policy-approved regular files using atomic replacement for writes;
 - run the Supervisor Home Assistant configuration check after the recoverable file update and before restart;
 - restart Home Assistant only after semantic validation succeeds;
@@ -58,6 +60,8 @@ Static validation is not treated as proof that Home Assistant accepts the config
 
 Before live mutation, SyncApp records a persistent transaction journal under `/data/transaction`, snapshots every existing affected managed file, and then requests a synchronous Supervisor partial backup of Home Assistant. The backup request is allowed up to 15 minutes because no live file mutation occurs until it succeeds.
 
+Only files that differ from the staged remote candidate are included in the write set; unchanged configuration files are not rewritten. After the backup completes, SyncApp proves every affected live target still matches the snapshot taken before the backup. If a local edit appeared during that window, SyncApp discards its transaction metadata and leaves that edit untouched.
+
 Only paths allowed by the same policy used for local-to-GitHub synchronization can be written or deleted. A symlinked live configuration root, symlink targets, and symlinked parent directories are refused. Writes use a temporary sibling file followed by atomic replacement.
 
 ### Verify
@@ -76,6 +80,30 @@ On every synchronization cycle, unresolved transaction state is handled before a
 
 An empty transaction directory left in the tiny interval before the first journal write can be cleaned automatically. A non-empty transaction directory without a journal is treated as ambiguous corruption and blocks new work rather than guessing.
 
+## Supervisor canary
+
+The app image includes `/app/canary.py` for exercising the real Supervisor integration **without changing any Home Assistant configuration file**.
+
+The default command is non-mutating with respect to configuration and performs Core info, Core API health, and `/core/check` calls:
+
+```sh
+python3 /app/canary.py
+```
+
+To additionally prove synchronous partial-backup creation:
+
+```sh
+python3 /app/canary.py --backup
+```
+
+The restart probe is intentionally separate and explicit because it restarts Home Assistant Core:
+
+```sh
+python3 /app/canary.py --backup --restart --timeout 120
+```
+
+A disposable/canary Home Assistant OS installation should pass all three levels before `remote_apply_enabled` is enabled anywhere important. The canary does not modify `/homeassistant`; the full remote-apply path should then be tested with a harmless, reversible configuration-only commit on that disposable instance.
+
 ## Test coverage
 
 Repository CI now covers:
@@ -84,9 +112,11 @@ Repository CI now covers:
 - Git relationship states including divergence and empty repositories;
 - untrusted staging, malformed YAML/JSON/Python, Home Assistant custom tags, and Git symlink rejection;
 - live-vs-HEAD drift detection;
-- apply-plan deletion/write behavior;
+- minimal apply-plan deletion/write behavior;
 - Supervisor endpoint request/response contracts;
+- Supervisor canary escalation behavior;
 - backup failure before mutation;
+- local edits occurring during the backup window;
 - semantic-check failure before restart;
 - post-restart health failure with verified rollback;
 - rollback-health failure with recovery journal preservation;

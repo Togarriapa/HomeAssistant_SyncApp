@@ -12,9 +12,18 @@ from syncapp.transaction import (
 
 
 class FakeSupervisor:
-    def __init__(self, *, fail_check: bool = False, fail_health_once: bool = False):
+    def __init__(
+        self,
+        *,
+        fail_backup: bool = False,
+        fail_check: bool = False,
+        fail_health_once: bool = False,
+        fail_health_always: bool = False,
+    ):
+        self.fail_backup = fail_backup
         self.fail_check = fail_check
         self.fail_health_once = fail_health_once
+        self.fail_health_always = fail_health_always
         self.backups = 0
         self.checks = 0
         self.restarts = 0
@@ -22,6 +31,8 @@ class FakeSupervisor:
 
     def create_homeassistant_backup(self, name: str) -> str:
         self.backups += 1
+        if self.fail_backup:
+            raise RuntimeError("backup unavailable")
         return "backup-123"
 
     def check_core_configuration(self) -> dict:
@@ -36,6 +47,8 @@ class FakeSupervisor:
 
     def wait_for_core_api(self, timeout_seconds: int, poll_seconds: float = 2.0) -> dict:
         self.health_checks += 1
+        if self.fail_health_always:
+            raise RuntimeError("Core remains unhealthy")
         if self.fail_health_once:
             self.fail_health_once = False
             raise RuntimeError("Core did not become healthy")
@@ -81,6 +94,27 @@ class TransactionTests(unittest.TestCase):
             tx.complete()
             self.assertFalse(tx_root.exists())
 
+    def test_backup_failure_leaves_live_files_unchanged_and_removes_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            plan = ApplyPlan("f" * 40, ("configuration.yaml",), ())
+            tx = FileTransaction.prepare(tx_root, live, staging, plan)
+            supervisor = FakeSupervisor(fail_backup=True)
+
+            with self.assertRaisesRegex(TransactionError, "backup failed"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertFalse(tx_root.exists())
+            self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.checks, 0)
+            self.assertEqual(supervisor.restarts, 0)
+            self.assertEqual(supervisor.health_checks, 0)
+
     def test_failed_configuration_check_restores_without_restarting_running_core(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -120,6 +154,28 @@ class TransactionTests(unittest.TestCase):
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
             self.assertEqual(supervisor.checks, 2)
+            self.assertEqual(supervisor.restarts, 2)
+            self.assertEqual(supervisor.health_checks, 2)
+
+    def test_rollback_health_failure_preserves_recovery_journal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            plan = ApplyPlan("g" * 40, ("configuration.yaml",), ())
+            tx = FileTransaction.prepare(tx_root, live, staging, plan)
+            supervisor = FakeSupervisor(fail_health_always=True)
+
+            with self.assertRaisesRegex(TransactionError, "rollback Core health failed"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertTrue(tx_root.exists())
+            active = FileTransaction.load_active(tx_root, live, staging)
+            self.assertIsNotNone(active)
+            self.assertEqual(active.state, "rollback_health_failed")  # type: ignore[union-attr]
             self.assertEqual(supervisor.restarts, 2)
             self.assertEqual(supervisor.health_checks, 2)
 

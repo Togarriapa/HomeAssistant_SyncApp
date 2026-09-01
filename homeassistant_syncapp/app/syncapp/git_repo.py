@@ -12,6 +12,21 @@ from urllib.parse import urlparse
 
 LOGGER = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
+_GIT_ENVIRONMENT_OVERRIDES = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_EXEC_PATH",
+    "GIT_TEMPLATE_DIR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+}
 
 
 class GitError(RuntimeError):
@@ -56,7 +71,18 @@ class GitRepository:
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
+        for key in list(env):
+            if key in _GIT_ENVIRONMENT_OVERRIDES or key.startswith("GIT_CONFIG_"):
+                env.pop(key, None)
+
         env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+
+        config: list[tuple[str, str]] = [
+            ("core.hooksPath", os.devnull),
+            ("credential.helper", ""),
+        ]
         if self.token:
             parsed = urlparse(self.remote_url)
             if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _GITHUB_HOSTS:
@@ -64,9 +90,17 @@ class GitRepository:
             credential = base64.b64encode(
                 f"x-access-token:{self.token}".encode("utf-8")
             ).decode("ascii")
-            env["GIT_CONFIG_COUNT"] = "1"
-            env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
-            env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {credential}"
+            config.append(
+                (
+                    "http.https://github.com/.extraHeader",
+                    f"Authorization: Basic {credential}",
+                )
+            )
+
+        env["GIT_CONFIG_COUNT"] = str(len(config))
+        for index, (key, value) in enumerate(config):
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
         return env
 
     def _run(

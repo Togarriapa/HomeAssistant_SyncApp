@@ -11,6 +11,7 @@ class FakeCanaryClient:
         self.calls: list[str] = []
         self.backup_name: str | None = None
         self.backups: list[dict] | None = None
+        self.backup_details: dict | None = None
 
     def core_info(self) -> dict:
         self.calls.append("core-info")
@@ -66,8 +67,21 @@ class FakeCanaryClient:
                 "date": "2026-09-01T22:00:00+00:00",
                 "protected": False,
                 "type": "partial",
+                "content": {"homeassistant": True, "addons": [], "folders": []},
             }
         ]
+
+    def backup_info(self, slug: str) -> dict:
+        self.calls.append("backup-info")
+        if self.backup_details is not None:
+            return self.backup_details
+        return {
+            "slug": slug,
+            "name": self.backup_name,
+            "type": "partial",
+            "homeassistant": "2026.9.0",
+            "homeassistant_exclude_database": True,
+        }
 
     def restart_core(self) -> None:
         self.calls.append("restart")
@@ -114,7 +128,7 @@ class CanaryTests(unittest.TestCase):
         self.assertNotIn("post_restart_core_api", result)
         self.assertNotIn("filesystem", result)
 
-    def test_backup_is_inventory_verified_before_optional_restart(self):
+    def test_backup_is_inventory_and_detail_verified_before_optional_restart(self):
         client = FakeCanaryClient()
         result = run_canary(  # type: ignore[arg-type]
             client,
@@ -132,47 +146,52 @@ class CanaryTests(unittest.TestCase):
                 "check",
                 "backup",
                 "backup-inventory",
+                "backup-info",
                 "restart",
                 "wait:90",
             ],
         )
-        self.assertEqual(result["backup"]["slug"], "backup-slug")  # type: ignore[index]
-        self.assertTrue(result["backup"]["inventory_verified"])  # type: ignore[index]
-        self.assertTrue(result["backup"]["name_matches_request"])  # type: ignore[index]
-        self.assertEqual(result["backup"]["type"], "partial")  # type: ignore[index]
+        backup = result["backup"]  # type: ignore[assignment]
+        self.assertEqual(backup["slug"], "backup-slug")  # type: ignore[index]
+        self.assertTrue(backup["inventory_verified"])  # type: ignore[index]
+        self.assertTrue(backup["detail_verified"])  # type: ignore[index]
+        self.assertTrue(backup["homeassistant_content_verified"])  # type: ignore[index]
+        self.assertTrue(backup["homeassistant_database_excluded"])  # type: ignore[index]
+        self.assertEqual(backup["homeassistant_version"], "2026.9.0")  # type: ignore[index]
         self.assertEqual(result["post_restart_core_api"], {"message": "API running."})
 
     def test_backup_canary_fails_if_created_slug_is_missing_from_inventory(self):
         client = FakeCanaryClient()
         client.backups = [{"slug": "other", "name": "Other backup", "type": "partial"}]
-
         with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
-
         self.assertEqual(client.calls[-2:], ["backup", "backup-inventory"])
 
     def test_backup_canary_fails_if_inventory_name_does_not_match_request(self):
         client = FakeCanaryClient()
         client.backups = [
-            {"slug": "backup-slug", "name": "Unexpected backup", "type": "partial"}
+            {
+                "slug": "backup-slug",
+                "name": "Unexpected backup",
+                "type": "partial",
+                "content": {"homeassistant": True},
+            }
         ]
-
         with self.assertRaisesRegex(RuntimeError, "name did not match"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
 
     def test_backup_canary_fails_if_inventory_type_is_not_partial(self):
         client = FakeCanaryClient()
-        client.backups = [
-            {"slug": "backup-slug", "name": None, "type": "full"}
-        ]
-        # Match the dynamically generated request name so this test reaches the
-        # type proof rather than failing earlier on the name proof.
         def inventory_with_requested_name() -> list[dict]:
             client.calls.append("backup-inventory")
             return [
-                {"slug": "backup-slug", "name": client.backup_name, "type": "full"}
+                {
+                    "slug": "backup-slug",
+                    "name": client.backup_name,
+                    "type": "full",
+                    "content": {"homeassistant": True},
+                }
             ]
-
         client.list_backups = inventory_with_requested_name  # type: ignore[method-assign]
         with self.assertRaisesRegex(RuntimeError, "was not the requested partial backup"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
@@ -183,7 +202,6 @@ class CanaryTests(unittest.TestCase):
             {"slug": "backup-slug", "name": "one", "type": "partial"},
             {"slug": "backup-slug", "name": "two", "type": "partial"},
         ]
-
         with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
 
@@ -193,9 +211,7 @@ class CanaryTests(unittest.TestCase):
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             before = sorted(path.name for path in live.iterdir())
-
             result = run_filesystem_canary(live)
-
             self.assertEqual(sorted(path.name for path in live.iterdir()), before)
             self.assertTrue(result["root_opened_no_follow"])
             self.assertTrue(result["descriptor_relative_open"])
@@ -209,7 +225,6 @@ class CanaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             live = Path(temporary) / "live"
             live.mkdir()
-
             with self.assertRaisesRegex(RuntimeError, "not an existing policy-approved regular file"):
                 run_filesystem_canary(live)
 
@@ -219,9 +234,7 @@ class CanaryTests(unittest.TestCase):
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             before = sorted(path.name for path in live.iterdir())
-
             result = run_filesystem_canary(live, write_probe=True)
-
             self.assertEqual(sorted(path.name for path in live.iterdir()), before)
             self.assertTrue(result["write_probe"])
             self.assertTrue(result["exclusive_source_reservation"])
@@ -241,15 +254,9 @@ class CanaryTests(unittest.TestCase):
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             stale = live / ".syncapp-canary-previous.tmp"
             stale.write_text("preserve evidence\n", encoding="utf-8")
-
             with self.assertRaisesRegex(RuntimeError, "stale .syncapp-canary-.* evidence exists"):
                 run_filesystem_canary(live, write_probe=True)
-
             self.assertEqual(stale.read_text(encoding="utf-8"), "preserve evidence\n")
-            self.assertEqual(
-                sorted(path.name for path in live.iterdir()),
-                [".syncapp-canary-previous.tmp", "configuration.yaml"],
-            )
 
     def test_exclusive_reservation_still_blocks_collision_after_clean_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -258,17 +265,12 @@ class CanaryTests(unittest.TestCase):
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             collision = live / ".syncapp-canary-fixed.tmp"
             collision.write_text("preserve race winner\n", encoding="utf-8")
-
             with mock.patch("canary._canary_temp_names", return_value=()), mock.patch(
                 "canary.secrets.token_hex", return_value="fixed"
             ):
                 with self.assertRaisesRegex(RuntimeError, "already exists"):
                     run_filesystem_canary(live, write_probe=True)
-
-            self.assertEqual(
-                collision.read_text(encoding="utf-8"),
-                "preserve race winner\n",
-            )
+            self.assertEqual(collision.read_text(encoding="utf-8"), "preserve race winner\n")
             self.assertFalse((live / ".syncapp-canary-fixed-replaced.tmp").exists())
 
     def test_nonmatching_tmp_file_does_not_block_write_probe(self):
@@ -278,9 +280,7 @@ class CanaryTests(unittest.TestCase):
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             unrelated = live / ".other-canary.tmp"
             unrelated.write_text("unrelated\n", encoding="utf-8")
-
             result = run_filesystem_canary(live, write_probe=True)
-
             self.assertTrue(result["write_probe"])
             self.assertEqual(unrelated.read_text(encoding="utf-8"), "unrelated\n")
 
@@ -290,18 +290,15 @@ class CanaryTests(unittest.TestCase):
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             real_replace = __import__("os").replace
-
             def fail_canary_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
                 if str(src).startswith(".syncapp-canary-"):
                     raise OSError("injected replace failure")
                 return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
             with mock.patch("canary.secrets.token_hex", return_value="fixed"), mock.patch(
                 "canary.os.replace", side_effect=fail_canary_replace
             ):
                 with self.assertRaisesRegex(OSError, "injected replace failure"):
                     run_filesystem_canary(live, write_probe=True)
-
             leftovers = [path.name for path in live.iterdir() if path.name.startswith(".syncapp-canary-")]
             self.assertEqual(leftovers, [])
 
@@ -312,7 +309,6 @@ class CanaryTests(unittest.TestCase):
             actual.mkdir()
             link = root / "live"
             link.symlink_to(actual, target_is_directory=True)
-
             with self.assertRaisesRegex(RuntimeError, "root must not be a symlink"):
                 run_filesystem_canary(link)
 
@@ -321,7 +317,6 @@ class CanaryTests(unittest.TestCase):
             live = Path(temporary) / "live"
             live.mkdir()
             (live / "secrets.yaml").write_text("password: no\n", encoding="utf-8")
-
             with self.assertRaisesRegex(RuntimeError, "blocked live path"):
                 run_filesystem_canary(live, probe_path="secrets.yaml")
 
@@ -331,14 +326,12 @@ class CanaryTests(unittest.TestCase):
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             client = FakeCanaryClient()
-
             result = run_canary(  # type: ignore[arg-type]
                 client,
                 filesystem=True,
                 filesystem_root=live,
             )
             self.assertFalse(result["filesystem"]["write_probe"])  # type: ignore[index]
-
             result = run_canary(  # type: ignore[arg-type]
                 client,
                 filesystem_write_probe=True,

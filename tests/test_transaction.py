@@ -16,15 +16,18 @@ class FakeSupervisor:
         self,
         *,
         fail_backup: bool = False,
+        fail_backup_verify: bool = False,
         fail_check: bool = False,
         fail_health_once: bool = False,
         fail_health_always: bool = False,
     ):
         self.fail_backup = fail_backup
+        self.fail_backup_verify = fail_backup_verify
         self.fail_check = fail_check
         self.fail_health_once = fail_health_once
         self.fail_health_always = fail_health_always
         self.backups = 0
+        self.backup_verifications = 0
         self.checks = 0
         self.restarts = 0
         self.health_checks = 0
@@ -34,6 +37,23 @@ class FakeSupervisor:
         if self.fail_backup:
             raise RuntimeError("backup unavailable")
         return "backup-123"
+
+    def verify_homeassistant_backup(
+        self,
+        slug: str,
+        expected_name: str,
+    ) -> dict[str, object]:
+        self.backup_verifications += 1
+        if self.fail_backup_verify:
+            raise RuntimeError("backup evidence unavailable")
+        return {
+            "slug": slug,
+            "name_matches_request": True,
+            "inventory_verified": True,
+            "detail_verified": True,
+            "homeassistant_content_verified": True,
+            "homeassistant_database_excluded": True,
+        }
 
     def check_core_configuration(self) -> dict:
         self.checks += 1
@@ -85,6 +105,7 @@ class TransactionTests(unittest.TestCase):
             self.assertFalse((live / "obsolete.yaml").exists())
             self.assertEqual(result.backup_slug, "backup-123")
             self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.backup_verifications, 1)
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 1)
             self.assertEqual(supervisor.health_checks, 1)
@@ -111,6 +132,33 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.backup_verifications, 0)
+            self.assertEqual(supervisor.checks, 0)
+            self.assertEqual(supervisor.restarts, 0)
+            self.assertEqual(supervisor.health_checks, 0)
+
+    def test_backup_verification_failure_blocks_apply_and_removes_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live, staging, tx_root = self._dirs(root)
+            (live / "configuration.yaml").write_text("old: true\n", encoding="utf-8")
+            (staging / "configuration.yaml").write_text("new: true\n", encoding="utf-8")
+
+            tx = FileTransaction.prepare(
+                tx_root,
+                live,
+                staging,
+                ApplyPlan("f" * 40, ("configuration.yaml",), ()),
+            )
+            supervisor = FakeSupervisor(fail_backup_verify=True)
+
+            with self.assertRaisesRegex(TransactionError, "backup failed.*evidence unavailable"):
+                execute_verified_transaction(tx, supervisor, health_timeout_seconds=1)
+
+            self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
+            self.assertFalse(tx_root.exists())
+            self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.backup_verifications, 1)
             self.assertEqual(supervisor.checks, 0)
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
@@ -151,6 +199,7 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.backup_verifications, 1)
             self.assertEqual(supervisor.checks, 1)
             self.assertEqual(supervisor.restarts, 0)
             self.assertEqual(supervisor.health_checks, 0)
@@ -172,6 +221,7 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual((live / "configuration.yaml").read_text(), "old: true\n")
             self.assertFalse(tx_root.exists())
             self.assertEqual(supervisor.backups, 1)
+            self.assertEqual(supervisor.backup_verifications, 1)
             self.assertEqual(supervisor.checks, 2)
             self.assertEqual(supervisor.restarts, 2)
             self.assertEqual(supervisor.health_checks, 2)

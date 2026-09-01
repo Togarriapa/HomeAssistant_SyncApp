@@ -7,7 +7,12 @@ from .config import Settings
 from .git_repo import GitRepository
 from .mirror import load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
-from .staging import StagingValidationError, stage_remote_configuration
+from .staging import (
+    StagingValidationError,
+    stage_remote_configuration,
+    validate_configuration_directory,
+)
+from .supervisor import SupervisorClient, SupervisorError
 from .transaction import TransactionError
 
 
@@ -98,11 +103,18 @@ class SyncEngine:
         self.repository.add_all()
         changed = self.repository.staged_paths()
 
-        unsafe = [path for path in changed if not is_allowed_relative(path)]
+        unsafe_staged = [path for path in changed if not is_allowed_relative(path)]
+        unsafe_tracked = [
+            path for path in self.repository.tracked_paths() if not is_allowed_relative(path)
+        ]
+        unsafe = sorted(set(unsafe_staged) | set(unsafe_tracked))
         if unsafe:
-            raise RuntimeError(
-                "Refusing commit because blocked paths became staged: " + ", ".join(unsafe)
+            self.repository.discard_worktree_changes()
+            LOGGER.error(
+                "Refusing local synchronization because the Git baseline/candidate contains blocked paths: %s",
+                ", ".join(unsafe),
             )
+            return
 
         if not changed:
             save_manifest(self.settings.manifest_path, current_managed)
@@ -110,7 +122,26 @@ class SyncEngine:
             return
 
         LOGGER.info("Detected %d relevant local change(s): %s", len(changed), ", ".join(changed))
+
+        try:
+            validated = validate_configuration_directory(self.settings.repository_dir)
+            SupervisorClient().check_core_configuration()
+        except (StagingValidationError, SupervisorError) as exc:
+            self.repository.discard_worktree_changes()
+            LOGGER.error(
+                "Rejected local configuration change before Git commit; live files were not modified: %s",
+                exc,
+            )
+            return
+
+        LOGGER.info(
+            "Local candidate passed static and Home Assistant semantic validation (%d files, %d bytes)",
+            validated.file_count,
+            validated.total_bytes,
+        )
+
         if self.settings.dry_run:
+            self.repository.discard_worktree_changes()
             LOGGER.warning("Dry-run enabled; no commit or push performed")
             return
 

@@ -6,6 +6,10 @@
 - Treat fetched remote trees as untrusted input and statically validate YAML, JSON, and Python custom-component syntax outside `/homeassistant`.
 - Block ordinary remote apply when the live allowed configuration has drifted from local Git HEAD.
 - Add a persistent transaction journal and local path-level rollback snapshot before live mutation.
+- Write new transaction journals as version 2 with a canonical SHA-256 integrity checksum and validate all recovery-critical fields before interpreting transaction state.
+- Fail closed on corrupt recovery evidence: reject unknown states, invalid Git object IDs, duplicate/overlapping apply paths, blocked or traversal paths, malformed staged hashes, invalid backup slugs, and `existed` entries outside the apply plan.
+- Cross-check every post-preparation recovery journal against the actual rollback snapshot so corruption cannot silently turn a restore operation into a deletion; corrupted journals and snapshots are preserved for inspection rather than driving automatic recovery.
+- Continue accepting structurally valid version 1 journals so an upgrade does not strand recoverable transactions created by earlier experimental builds.
 - Require a synchronous Supervisor partial Home Assistant backup before applying files.
 - Run the Supervisor Core configuration check after recoverable application and before restart.
 - Verify the Home Assistant Core API after restart through the Supervisor proxy.

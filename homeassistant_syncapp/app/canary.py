@@ -54,19 +54,21 @@ def run_filesystem_canary(
         os.stat(".", dir_fd=root_fd, follow_symlinks=False)
 
         filesystem = LiveFilesystem(root)
-        probe_exists = filesystem.exists_regular(probe_path)
-        probe_read_verified = False
-        if probe_exists:
-            digest = filesystem.sha256(probe_path)
-            probe_read_verified = len(digest) == 64
+        if not filesystem.exists_regular(probe_path):
+            raise RuntimeError(
+                f"filesystem probe path is not an existing policy-approved regular file: {probe_path}"
+            )
+        digest = filesystem.sha256(probe_path)
+        if len(digest) != 64:
+            raise RuntimeError("filesystem probe did not produce a complete SHA-256 digest")
 
         result: dict[str, object] = {
             "root_opened_no_follow": True,
             "descriptor_relative_open": True,
             "descriptor_relative_stat": True,
             "probe_path": probe_path,
-            "probe_path_exists_regular": probe_exists,
-            "probe_path_read_verified": probe_read_verified,
+            "probe_path_exists_regular": True,
+            "probe_path_read_verified": True,
             "write_probe": False,
         }
 
@@ -79,6 +81,16 @@ def run_filesystem_canary(
         os.close(root_fd)
 
 
+def _create_owned_probe_file(root_fd: int, name: str) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        return os.open(name, flags, 0o600, dir_fd=root_fd)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            f"filesystem canary random probe name unexpectedly already exists: {name}"
+        ) from exc
+
+
 def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
     """Prove descriptor-relative replace/unlink/fsync on the real live mount."""
     token = secrets.token_hex(12)
@@ -88,8 +100,7 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
     created: set[str] = set()
 
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        source_fd = os.open(source_name, flags, 0o600, dir_fd=root_fd)
+        source_fd = _create_owned_probe_file(root_fd, source_name)
         created.add(source_name)
         try:
             view = memoryview(payload)
@@ -102,6 +113,15 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
         finally:
             os.close(source_fd)
 
+        # Reserve the destination with O_EXCL before replacement. This makes
+        # os.replace overwrite only a file created by this canary invocation,
+        # never an unrelated pre-existing path even in the vanishingly unlikely
+        # event of a random-name collision.
+        destination_fd = _create_owned_probe_file(root_fd, destination_name)
+        created.add(destination_name)
+        os.close(destination_fd)
+        os.fsync(root_fd)
+
         os.replace(
             source_name,
             destination_name,
@@ -109,7 +129,6 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
             dst_dir_fd=root_fd,
         )
         created.discard(source_name)
-        created.add(destination_name)
         os.fsync(root_fd)
 
         read_fd = os.open(destination_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
@@ -130,6 +149,8 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
         os.fsync(root_fd)
         return {
             "write_probe": True,
+            "exclusive_source_reservation": True,
+            "exclusive_destination_reservation": True,
             "descriptor_relative_replace": True,
             "descriptor_relative_unlink": True,
             "file_fsync": True,
@@ -138,6 +159,7 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
         }
     finally:
         cleanup_error: OSError | None = None
+        cleanup_attempted = bool(created)
         for name in tuple(created):
             try:
                 os.unlink(name, dir_fd=root_fd)
@@ -145,7 +167,7 @@ def _run_filesystem_write_probe(root_fd: int) -> dict[str, object]:
                 pass
             except OSError as exc:
                 cleanup_error = exc
-        if created:
+        if cleanup_attempted:
             try:
                 os.fsync(root_fd)
             except OSError as exc:
@@ -220,14 +242,14 @@ def main() -> int:
         "--filesystem-write-probe",
         action="store_true",
         help=(
-            "explicitly create/replace/delete only a blocked random *.tmp file under "
+            "explicitly create/replace/delete only blocked random *.tmp files under "
             "/homeassistant to verify descriptor-relative mutation and fsync support"
         ),
     )
     parser.add_argument(
         "--filesystem-path",
         default="configuration.yaml",
-        help="policy-approved regular file to read through the no-follow filesystem layer",
+        help="existing policy-approved regular file to read through the no-follow filesystem layer",
     )
     parser.add_argument(
         "--timeout",

@@ -58,7 +58,7 @@ def recover_interrupted_apply(settings: Settings) -> bool:
     recover_active_transaction(
         active,
         supervisor,
-        health_timeout_seconds=settings.health_timeout_seconds,
+        health_timeout_seconds=settings.verify_timeout_seconds,
     )
     LOGGER.warning("Interrupted remote-apply transaction was rolled back and verified")
     return True
@@ -104,7 +104,7 @@ def apply_staged_remote(
         result = execute_verified_transaction(
             transaction,
             supervisor,
-            health_timeout_seconds=settings.health_timeout_seconds,
+            health_timeout_seconds=settings.verify_timeout_seconds,
         )
         repository.adopt_remote(staged.commit)
         save_manifest(settings.manifest_path, collect_allowed_files(settings.staging_dir))
@@ -120,7 +120,7 @@ def apply_staged_remote(
                 recover_active_transaction(
                     active,
                     supervisor,
-                    health_timeout_seconds=settings.health_timeout_seconds,
+                    health_timeout_seconds=settings.verify_timeout_seconds,
                 )
             except Exception as recovery_error:
                 raise TransactionError(

@@ -146,32 +146,34 @@ class LiveFilesystem:
             temporary = f".{leaf}.syncapp-new"
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             try:
-                temp_fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
-            except FileExistsError as exc:
-                raise LiveFilesystemError(
-                    f"refusing pre-existing live transaction temporary file: {relative}"
-                ) from exc
-            except OSError as exc:
-                raise LiveFilesystemError(f"cannot create live temporary file: {relative}: {exc}") from exc
-            try:
-                digest = hashlib.sha256()
-                with source.open("rb") as source_handle:
-                    while True:
-                        chunk = source_handle.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        digest.update(chunk)
-                        view = memoryview(chunk)
-                        while view:
-                            written = os.write(temp_fd, view)
-                            view = view[written:]
-                if digest.hexdigest() != expected_sha256:
-                    raise LiveFilesystemError(f"staged content changed while copying: {relative}")
-                os.fchmod(temp_fd, stat.S_IMODE(source.stat().st_mode))
-                os.fsync(temp_fd)
-            finally:
-                os.close(temp_fd)
-            try:
+                try:
+                    temp_fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+                except FileExistsError as exc:
+                    raise LiveFilesystemError(
+                        f"refusing pre-existing live transaction temporary file: {relative}"
+                    ) from exc
+                except OSError as exc:
+                    raise LiveFilesystemError(
+                        f"cannot create live temporary file: {relative}: {exc}"
+                    ) from exc
+                try:
+                    digest = hashlib.sha256()
+                    with source.open("rb") as source_handle:
+                        while True:
+                            chunk = source_handle.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            view = memoryview(chunk)
+                            while view:
+                                written = os.write(temp_fd, view)
+                                view = view[written:]
+                    if digest.hexdigest() != expected_sha256:
+                        raise LiveFilesystemError(f"staged content changed while copying: {relative}")
+                    os.fchmod(temp_fd, stat.S_IMODE(source.stat().st_mode))
+                    os.fsync(temp_fd)
+                finally:
+                    os.close(temp_fd)
                 os.replace(temporary, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
                 os.fsync(parent_fd)
             finally:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -57,19 +58,33 @@ def _validate_entry(entry: GitTreeEntry) -> None:
         raise StagingValidationError(f"remote path is blocked by policy: {entry.path}")
 
 
+def _read_utf8(path: Path, relative: str, kind: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise StagingValidationError(f"invalid UTF-8 {kind} in {relative}: {exc}") from exc
+
+
 def _validate_file(path: Path, relative: str) -> None:
     suffix = path.suffix.lower()
     if suffix in {".yaml", ".yml"}:
+        text = _read_utf8(path, relative, "YAML")
         try:
-            text = path.read_text(encoding="utf-8")
             list(yaml.load_all(text, Loader=_HomeAssistantLoader))
-        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        except yaml.YAMLError as exc:
             raise StagingValidationError(f"invalid YAML in {relative}: {exc}") from exc
     elif suffix == ".json":
+        text = _read_utf8(path, relative, "JSON")
         try:
-            json.loads(path.read_text(encoding="utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
             raise StagingValidationError(f"invalid JSON in {relative}: {exc}") from exc
+    elif suffix == ".py":
+        text = _read_utf8(path, relative, "Python")
+        try:
+            ast.parse(text, filename=relative)
+        except SyntaxError as exc:
+            raise StagingValidationError(f"invalid Python syntax in {relative}: {exc}") from exc
 
 
 def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> StagingResult:

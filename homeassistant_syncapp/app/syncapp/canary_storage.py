@@ -49,7 +49,7 @@ def run_backup_storage_probe(
 ) -> dict[str, object]:
     """Measure a fresh verified backup download without risking data-root exhaustion.
 
-    This is canary-only evidence.  It intentionally does not change the production
+    This is canary-only evidence. It intentionally does not change the production
     Backup -> Apply contract.
     """
     if max_bytes <= 0:
@@ -116,6 +116,11 @@ def run_backup_storage_probe(
             raise CanaryStorageError(f"Supervisor backup download failed: {exc}") from exc
         download_seconds = _elapsed(clock, started)
         after_download = _available_bytes(data_root)
+        if after_download < reserve_bytes:
+            raise CanaryStorageError(
+                "backup download reduced /data free space below the protected reserve; "
+                "temporary archive will be removed before further validation"
+            )
 
         started = clock()
         try:
@@ -130,6 +135,10 @@ def run_backup_storage_probe(
         archive_verify_seconds = _elapsed(clock, started)
 
     after_cleanup = _available_bytes(data_root)
+    if after_cleanup < reserve_bytes:
+        raise CanaryStorageError(
+            "canary cleanup completed but /data remains below the protected free-space reserve"
+        )
 
     return {
         "backup": backup_evidence,
@@ -150,6 +159,8 @@ def run_backup_storage_probe(
             "available_bytes_after_cleanup": after_cleanup,
             "available_delta_during_download": after_download - before_download,
             "available_delta_after_cleanup": after_cleanup - before_download,
+            "reserve_preserved_after_download": True,
+            "reserve_preserved_after_cleanup": True,
         },
         "timings_seconds": {
             "backup_create": create_seconds,

@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 from pathlib import Path
 import tarfile
 import unittest
@@ -12,15 +13,31 @@ def _add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:
     archive.addfile(info, BytesIO(data))
 
 
-def make_backup_archive() -> bytes:
+def make_backup_archive(
+    name: str,
+    *,
+    slug: str = "backup-slug",
+    homeassistant_version: str = "2026.9.0",
+) -> bytes:
     inner_buffer = BytesIO()
     with tarfile.open(fileobj=inner_buffer, mode="w:gz") as inner:
         _add_bytes(inner, "./homeassistant.json", b'{"version":"2026.9.0"}\n')
         _add_bytes(inner, "./data/configuration.yaml", b"homeassistant:\n")
 
+    metadata = json.dumps(
+        {
+            "slug": slug,
+            "name": name,
+            "type": "partial",
+            "homeassistant": {
+                "version": homeassistant_version,
+                "exclude_database": True,
+            },
+        }
+    ).encode("utf-8")
     outer_buffer = BytesIO()
     with tarfile.open(fileobj=outer_buffer, mode="w") as outer:
-        _add_bytes(outer, "./backup.json", b'{"slug":"backup-slug"}\n')
+        _add_bytes(outer, "./backup.json", metadata)
         _add_bytes(outer, "./homeassistant.tar.gz", inner_buffer.getvalue())
     return outer_buffer.getvalue()
 
@@ -29,7 +46,7 @@ class ArchiveCanaryClient:
     def __init__(self, archive: bytes | None = None):
         self.calls: list[str] = []
         self.backup_name: str | None = None
-        self.archive = archive if archive is not None else make_backup_archive()
+        self.archive_override = archive
         self.download_limit: int | None = None
         self.inventory_size: object = 1.5
         self.detail_size: object = "1.5"
@@ -85,10 +102,13 @@ class ArchiveCanaryClient:
     def download_backup(self, slug: str, destination: Path, *, max_bytes: int) -> int:
         self.calls.append("backup-download")
         self.download_limit = max_bytes
-        if len(self.archive) > max_bytes:
+        if self.backup_name is None:
+            raise AssertionError("backup name must exist before archive download")
+        archive = self.archive_override or make_backup_archive(self.backup_name)
+        if len(archive) > max_bytes:
             raise RuntimeError("fake archive exceeds limit")
-        destination.write_bytes(self.archive)
-        return len(self.archive)
+        destination.write_bytes(archive)
+        return len(archive)
 
     def restart_core(self) -> None:
         self.calls.append("restart")
@@ -105,7 +125,7 @@ class CanaryBackupArchiveTests(unittest.TestCase):
             run_canary(client, backup_archive_probe=True)  # type: ignore[arg-type]
         self.assertEqual(client.calls, [])
 
-    def test_archive_is_downloaded_and_verified_before_restart(self):
+    def test_archive_is_downloaded_identity_bound_and_verified_before_restart(self):
         client = ArchiveCanaryClient()
         result = run_canary(  # type: ignore[arg-type]
             client,
@@ -124,8 +144,10 @@ class CanaryBackupArchiveTests(unittest.TestCase):
         archive = result["backup_archive"]  # type: ignore[assignment]
         self.assertTrue(archive["download_verified"])  # type: ignore[index]
         self.assertTrue(archive["outer_tar_readable"])  # type: ignore[index]
+        self.assertTrue(archive["backup_identity_verified"])  # type: ignore[index]
         self.assertTrue(archive["homeassistant_archive_readable"])  # type: ignore[index]
         self.assertTrue(archive["homeassistant_metadata_present"])  # type: ignore[index]
+        self.assertTrue(archive["homeassistant_version_matches_api"])  # type: ignore[index]
         self.assertEqual(archive["homeassistant_data_files"], 1)  # type: ignore[index]
         self.assertTrue(archive["temporary_download_removed"])  # type: ignore[index]
 
@@ -141,6 +163,19 @@ class CanaryBackupArchiveTests(unittest.TestCase):
             )
         self.assertNotIn("backup-info", client.calls)
         self.assertNotIn("backup-download", client.calls)
+        self.assertNotIn("restart", client.calls)
+
+    def test_mismatched_downloaded_archive_identity_blocks_restart(self):
+        archive = make_backup_archive("different backup name")
+        client = ArchiveCanaryClient(archive=archive)
+        with self.assertRaisesRegex(RuntimeError, "name does not match"):
+            run_canary(  # type: ignore[arg-type]
+                client,
+                create_backup=True,
+                backup_archive_probe=True,
+                restart=True,
+            )
+        self.assertIn("backup-download", client.calls)
         self.assertNotIn("restart", client.calls)
 
     def test_corrupt_download_blocks_restart(self):

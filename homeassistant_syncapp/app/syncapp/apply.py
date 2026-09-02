@@ -9,6 +9,7 @@ from .drift import detect_live_drift
 from .git_repo import GitRepository
 from .mirror import save_manifest
 from .policy import collect_allowed_files, is_allowed_relative
+from .recovery_loader import load_active_transaction
 from .staging import StagingResult, StagingValidationError, assert_staging_integrity
 from .supervisor import SupervisorClient
 from .transaction import (
@@ -33,7 +34,7 @@ def _managed_paths_at_commit(repository: GitRepository, commit: str) -> set[str]
 
 
 def recover_interrupted_apply(settings: Settings, repository: GitRepository) -> bool:
-    active = FileTransaction.load_active(
+    active = load_active_transaction(
         settings.transaction_dir,
         settings.source_dir,
         settings.staging_dir,
@@ -186,7 +187,7 @@ def _execute_staged_apply(
             health_timeout_seconds=settings.verify_timeout_seconds,
         )
     except Exception as exc:
-        active = FileTransaction.load_active(
+        active = load_active_transaction(
             settings.transaction_dir,
             settings.source_dir,
             settings.staging_dir,
@@ -208,7 +209,7 @@ def _execute_staged_apply(
         repository.fetch()
         repository.adopt_remote(result.commit)
     except Exception as exc:
-        active = FileTransaction.load_active(
+        active = load_active_transaction(
             settings.transaction_dir,
             settings.source_dir,
             settings.staging_dir,

@@ -107,12 +107,24 @@ Archive download, identity binding, and structural verification complete **befor
 
 Do not automatically promote this archive read into the production remote-apply transaction until disposable-HAOS evidence establishes realistic download latency, temporary-storage consumption, and behavior for the intended backup sizes/storage locations. The production transaction continues to rely on the pinned local rollback snapshot plus Supervisor metadata/size continuity gates.
 
-## 6. Full transaction canary
+## 6. Optional `/data` storage and timing measurement
 
-Only after all preceding levels pass should the disposable instance test an actual harmless remote commit through SyncApp's complete workflow:
+After the archive probe above passes, measure its real HAOS cost with the dedicated canary-only helper:
+
+```sh
+python3 /app/canary_storage.py
+```
+
+This creates a separate fresh verified backup, places the temporary archive under `/data`, protects a configurable free-space reserve before and after the bounded download, and records phase timings plus storage deltas. It is designed to answer whether archive validation is operationally affordable enough to consider as a **future** production gate; it does not change the current production transaction.
+
+See `CANARY_STORAGE.md` for the capacity model, optional `--archive-max-mib` / `--free-reserve-mib` bounds, failure behavior under concurrent storage pressure, evidence to retain for issue #4, and the explicit promotion rule. Do not skip directly to production archive verification based on repository CI or a single unusually fast disposable-instance run.
+
+## 7. Full transaction canary
+
+Only after all preceding safety probes pass should the disposable instance test an actual harmless remote commit through SyncApp's complete workflow:
 
 **Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Rollback if necessary**
 
 Keep both `dry_run: true` and `remote_apply_enabled: false` while establishing the initial canary evidence. Enable live remote mutation only on the disposable instance and only for the issue #4 acceptance matrix.
 
-The canary helper is not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup metadata probe proves Supervisor recorded the requested Home Assistant backup contents and size evidence, the archive probe binds the fresh downloaded artifact to that backup and proves its transport, outer tar, and embedded Home Assistant archive are structurally coherent, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, restoreability on another machine, or exact Git adoption.
+The canary helpers are not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup metadata probe proves Supervisor recorded the requested Home Assistant backup contents and size evidence, the archive probe binds the fresh downloaded artifact to that backup and proves its transport, outer tar, and embedded Home Assistant archive are structurally coherent, the storage/timing probe measures whether that extra archive verification is operationally affordable on the real target, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, restoreability on another machine, or exact Git adoption.

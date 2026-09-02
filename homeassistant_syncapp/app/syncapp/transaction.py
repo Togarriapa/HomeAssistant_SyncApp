@@ -96,6 +96,7 @@ def build_apply_plan(
 ) -> ApplyPlan:
     write_paths: list[str] = []
     staged_paths: set[str] = set()
+    live_fs = LiveFilesystem(live_dir) if live_dir is not None else None
     for path in sorted(staging_dir.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
@@ -103,12 +104,17 @@ def build_apply_plan(
         if not is_allowed_relative(relative):
             raise TransactionError(f"blocked path reached apply planner: {relative}")
         staged_paths.add(relative)
-        if live_dir is None:
+        if live_fs is None:
             write_paths.append(relative)
             continue
-        live = live_dir / relative
-        if live.is_symlink() or not live.is_file() or live.read_bytes() != path.read_bytes():
-            write_paths.append(relative)
+        try:
+            exists = live_fs.exists_regular(relative)
+            if not exists or live_fs.sha256(relative) != _sha256_file(path):
+                write_paths.append(relative)
+        except LiveFilesystemError as exc:
+            raise TransactionError(
+                f"cannot compare staged candidate to live configuration safely: {exc}"
+            ) from exc
     return ApplyPlan(
         commit=commit,
         write_paths=tuple(write_paths),

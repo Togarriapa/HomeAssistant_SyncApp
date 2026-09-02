@@ -17,7 +17,10 @@ from syncapp.backup_archive import (
 def _declared_member_header(name: str, size: int) -> bytes:
     member = tarfile.TarInfo(name)
     member.size = size
-    return member.tobuf(format=tarfile.USTAR_FORMAT)
+    # GNU tar uses base-256 numeric fields when legacy USTAR octal fields cannot
+    # represent the declared size. This lets the fixture exercise an oversized
+    # header without allocating or writing the declared body.
+    return member.tobuf(format=tarfile.GNU_FORMAT)
 
 
 def _add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:

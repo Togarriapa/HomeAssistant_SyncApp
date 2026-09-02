@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 import json
 import os
+from pathlib import Path
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -140,6 +141,74 @@ class SupervisorClient:
             f"backup information {slug}",
         )
 
+    def download_backup(
+        self,
+        slug: str,
+        destination: Path,
+        *,
+        max_bytes: int,
+        timeout: int = 900,
+    ) -> int:
+        """Stream a backup tar to a new local file with a hard byte ceiling."""
+        if max_bytes <= 0:
+            raise SupervisorError("backup download byte limit must be positive")
+        encoded = self._safe_backup_slug(slug)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(destination, flags, 0o600)
+        except FileExistsError as exc:
+            raise SupervisorError("refusing to overwrite an existing backup download path") from exc
+        except OSError as exc:
+            raise SupervisorError(f"cannot create backup download path safely: {exc}") from exc
+
+        path = f"/backups/{encoded}/download"
+        request = Request(
+            f"{self.base_url}{path}",
+            method="GET",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        total = 0
+        try:
+            with os.fdopen(fd, "wb", closefd=True) as output:
+                try:
+                    with urlopen(request, timeout=timeout) as response:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > max_bytes:
+                                raise SupervisorError(
+                                    "Supervisor backup download exceeded the configured canary byte limit"
+                                )
+                            output.write(chunk)
+                except HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        detail = ""
+                    suffix = f": {detail}" if detail else ""
+                    raise SupervisorError(
+                        f"Supervisor request {path} failed with HTTP {exc.code}{suffix}"
+                    ) from exc
+                except URLError as exc:
+                    raise SupervisorError(f"Supervisor request {path} failed: {exc}") from exc
+                if total <= 0:
+                    raise SupervisorError("Supervisor backup download returned no bytes")
+                output.flush()
+                os.fsync(output.fileno())
+        except Exception:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                raise SupervisorError(
+                    f"backup download failed and partial-file cleanup also failed: {cleanup_exc}"
+                ) from cleanup_exc
+            raise
+        return total
+
     def verify_homeassistant_backup(
         self,
         slug: str,
@@ -185,7 +254,7 @@ class SupervisorClient:
             raise SupervisorError(
                 "Supervisor backup details did not confirm Home Assistant database exclusion"
             )
-        detail_size = self._backup_size_mb(backup_size := details.get("size"), "backup details")
+        detail_size = self._backup_size_mb(details.get("size"), "backup details")
         if detail_size != inventory_size:
             raise SupervisorError(
                 "Supervisor backup inventory/detail size did not match for the created backup"

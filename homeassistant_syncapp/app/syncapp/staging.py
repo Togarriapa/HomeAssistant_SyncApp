@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -11,6 +12,7 @@ import yaml
 
 from .git_repo import GitRepository, GitTreeEntry
 from .policy import collect_allowed_files, is_allowed_relative
+from .staging_fs import StagingFilesystem, StagingFilesystemError
 
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -154,6 +156,14 @@ def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
         )
 
 
+def _remove_existing_staging_tree(path: Path, *, label: str) -> None:
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise StagingValidationError(f"refusing unsafe existing {label} path")
+    shutil.rmtree(path)
+
+
 def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> StagingResult:
     """Materialize a validated remote tree outside the live HA configuration."""
     remote = repository.remote_head()
@@ -179,39 +189,48 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
         planned.append((entry, size))
 
     temporary = staging_dir.with_name(staging_dir.name + ".new")
-    if temporary.exists():
-        shutil.rmtree(temporary)
+    _remove_existing_staging_tree(temporary, label="staging temporary")
     temporary.mkdir(parents=True, exist_ok=False)
 
     git_hashes: list[tuple[str, str]] = []
+    installed = False
     try:
-        for entry, expected_size in planned:
-            destination = temporary / entry.path
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            content = repository.read_blob(entry.object_id)
-            if len(content) != expected_size:
+        with StagingFilesystem(temporary) as staging_fs:
+            for entry, expected_size in planned:
+                content = repository.read_blob(entry.object_id)
+                if len(content) != expected_size:
+                    raise StagingValidationError(
+                        f"blob size changed while staging {entry.path!r}"
+                    )
+                digest = hashlib.sha256(content).hexdigest()
+                git_hashes.append((entry.path, digest))
+                staging_fs.write_new(entry.path, content, digest)
+
+            staging_fs.assert_path_identity()
+            validated = validate_configuration_directory(temporary)
+            staging_fs.assert_path_identity()
+            expected_hashes = tuple(sorted(git_hashes))
+            if validated.file_count != len(planned) or validated.total_bytes != total_bytes:
                 raise StagingValidationError(
-                    f"blob size changed while staging {entry.path!r}"
+                    "materialized staging tree does not match validated Git tree"
                 )
-            git_hashes.append((entry.path, hashlib.sha256(content).hexdigest()))
-            destination.write_bytes(content)
+            if validated.file_sha256 != expected_hashes:
+                raise StagingValidationError(
+                    "materialized staging bytes do not match the fetched Git blobs"
+                )
 
-        validated = validate_configuration_directory(temporary)
-        expected_hashes = tuple(sorted(git_hashes))
-        if validated.file_count != len(planned) or validated.total_bytes != total_bytes:
-            raise StagingValidationError(
-                "materialized staging tree does not match validated Git tree"
-            )
-        if validated.file_sha256 != expected_hashes:
-            raise StagingValidationError(
-                "materialized staging bytes do not match the fetched Git blobs"
-            )
-
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        temporary.rename(staging_dir)
+            _remove_existing_staging_tree(staging_dir, label="staging")
+            staging_fs.assert_path_identity()
+            temporary.rename(staging_dir)
+            installed = True
+            staging_fs.assert_path_identity(staging_dir)
+    except StagingFilesystemError as exc:
+        if not installed and os.path.lexists(temporary) and not temporary.is_symlink():
+            shutil.rmtree(temporary, ignore_errors=True)
+        raise StagingValidationError(f"staging filesystem confinement failed: {exc}") from exc
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if not installed and os.path.lexists(temporary) and not temporary.is_symlink():
+            shutil.rmtree(temporary, ignore_errors=True)
         raise
 
     return StagingResult(

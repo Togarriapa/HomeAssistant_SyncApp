@@ -56,12 +56,14 @@ class StagingBindingApplyGateTests(unittest.TestCase):
             root = Path(temporary)
             settings = self._settings(root)
             settings.source_dir.mkdir(parents=True)
-            original = b"homeassistant:\n  name: Remote original\n"
+            original = b"homeassistant:\n  name: OriginalA\n"
+            tampered = "homeassistant:\n  name: TamperedA\n"
+            self.assertEqual(len(original), len(tampered.encode("utf-8")))
             staged = stage_remote_configuration(
                 FakeRepositoryForStaging(original), settings.staging_dir  # type: ignore[arg-type]
             )
             (settings.staging_dir / "configuration.yaml").write_text(
-                "homeassistant:\n  name: Tampered but valid\n", encoding="utf-8"
+                tampered, encoding="utf-8"
             )
 
             repository = MagicMock()
@@ -71,7 +73,8 @@ class StagingBindingApplyGateTests(unittest.TestCase):
                 "syncapp.apply.FileTransaction.prepare"
             ) as prepare:
                 with self.assertRaisesRegex(
-                    TransactionError, "staging integrity check failed"
+                    TransactionError,
+                    "validated staging tree changed before apply planning: .*hash manifest changed",
                 ):
                     apply_staged_initial_remote(repository, settings, staged)
 

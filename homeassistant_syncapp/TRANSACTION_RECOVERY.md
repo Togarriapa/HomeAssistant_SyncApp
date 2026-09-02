@@ -2,6 +2,16 @@
 
 SyncApp treats `/data/transaction` as safety-critical persistent state. Automatic recovery may restore or delete policy-approved live Home Assistant files, so recovery evidence must be proven trustworthy before any rollback or post-verification finalization decision is made.
 
+## Descriptor-pinned recovery root
+
+Production recovery opens `/data/transaction` as a directory with `O_DIRECTORY|O_NOFOLLOW` and keeps that descriptor open while the journal and rollback snapshot are validated. A symlinked transaction root is rejected before its contents are interpreted.
+
+The journal leaf is opened relative to that directory descriptor with `O_NOFOLLOW`, must be a regular file, and is capped at 1 MiB. SyncApp records file metadata before reading and rechecks device/inode/size/mtime/ctime afterward; a journal that changes while being read is rejected. UTF-8/JSON parsing happens only after this bounded stable read.
+
+Snapshot validation still traverses the transaction pathname, so the originally opened root descriptor remains alive across that validation. Before returning any recovery record, SyncApp requires the transaction pathname to still identify the same directory device/inode. A root rename/symlink/directory replacement during validation therefore fails closed before parsed recovery state can drive rollback.
+
+A transaction directory that exists without a journal is not guessed away. Only a genuinely empty orphan root is removed, and that cleanup re-verifies the opened root identity and removes the child relative to an opened no-follow parent directory. Non-empty journal-less roots remain an operator-visible ambiguity.
+
 ## Journal versions
 
 New transactions write journal version `2`. Version 2 adds `integrity_sha256`, a SHA-256 checksum over a canonical JSON representation of every journal field except the checksum itself. The checksum is an accidental-corruption detector, not a cryptographic authentication mechanism.
@@ -14,6 +24,7 @@ Structurally valid version `1` journals remain readable so an upgrade does not s
 
 Before SyncApp interprets a recovery state it validates that:
 
+- the transaction root and journal leaf pass the descriptor/no-follow and stability checks above;
 - the journal is a JSON object with a supported version and known transaction state;
 - the referenced commit is a syntactically valid Git object identifier;
 - write, delete, and `existed` entries are unique policy-approved relative paths;
@@ -26,7 +37,7 @@ Before SyncApp interprets a recovery state it validates that:
 
 After preparation has completed, SyncApp enumerates the rollback snapshot without following symlinks and requires its regular-file set to match the journal's `existed` set exactly. This is important because `existed` controls rollback semantics: a path marked as previously existing is restored from the snapshot, while an affected path that did not previously exist is deleted during rollback.
 
-If that relationship or the pinned snapshot content cannot be proven, SyncApp must not guess. The live configuration, transaction journal, and snapshot remain in place and the synchronization cycle fails closed for operator investigation.
+If that relationship, the pinned root identity, journal stability, or pinned snapshot content cannot be proven, SyncApp must not guess. The live configuration, transaction journal, and snapshot remain in place and the synchronization cycle fails closed for operator investigation.
 
 The `preparing` state is the one exception to the exact snapshot-set/content check because a crash may occur while the snapshot itself is still being constructed. Recovery from `preparing` is discard-only: live mutation has not begun.
 

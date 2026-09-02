@@ -65,22 +65,24 @@ def run_backup_storage_probe(
     client: SupervisorClient,
     *,
     data_root: Path = DEFAULT_DATA_ROOT,
-    live_root: Path = DEFAULT_LIVE_ROOT,
+    live_root: Path | None = None,
     max_bytes: int = DEFAULT_ARCHIVE_MAX_BYTES,
     reserve_bytes: int = DEFAULT_FREE_RESERVE_BYTES,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
-    """Measure and byte-verify a fresh backup without risking data-root exhaustion.
+    """Measure a fresh backup and optionally prove live-byte archive fidelity.
 
-    This is canary-only evidence. It intentionally does not change the production
-    Backup -> Apply contract.
+    The `/app/canary_storage.py` operator entrypoint always supplies `/homeassistant`
+    and therefore always enables fidelity proof. ``live_root=None`` remains available
+    for lower-level storage/timing failure injection tests. This is canary-only
+    evidence and intentionally does not change the production Backup -> Apply contract.
     """
     if max_bytes <= 0:
         raise CanaryStorageError("archive byte ceiling must be positive")
     if reserve_bytes <= 0:
         raise CanaryStorageError("free-space reserve must be positive")
 
-    live_hashes_before = _allowed_live_hashes(live_root)
+    live_hashes_before = _allowed_live_hashes(live_root) if live_root is not None else None
 
     required_free = max_bytes + reserve_bytes
     initial_available = _available_bytes(data_root)
@@ -160,11 +162,14 @@ def run_backup_storage_probe(
             raise CanaryStorageError(f"downloaded backup archive canary failed: {exc}") from exc
         archive_verify_seconds = _elapsed(clock, started)
 
-    live_hashes_after = _allowed_live_hashes(live_root)
-    if live_hashes_after != live_hashes_before:
-        raise CanaryStorageError(
-            "policy-approved live configuration changed during backup fidelity measurement"
-        )
+    live_file_set_stable = False
+    if live_root is not None:
+        live_hashes_after = _allowed_live_hashes(live_root)
+        if live_hashes_after != live_hashes_before:
+            raise CanaryStorageError(
+                "policy-approved live configuration changed during backup fidelity measurement"
+            )
+        live_file_set_stable = True
 
     after_cleanup = _available_bytes(data_root)
     if after_cleanup < reserve_bytes:
@@ -178,7 +183,7 @@ def run_backup_storage_probe(
             "download_verified": True,
             "downloaded_bytes": downloaded_bytes,
             **archive_evidence,
-            "live_file_set_stable": True,
+            "live_file_set_stable": live_file_set_stable,
             "temporary_download_removed": True,
         },
         "storage": {

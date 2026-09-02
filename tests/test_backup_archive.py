@@ -18,7 +18,9 @@ def make_backup_archive(
     *,
     slug: str = "backup-slug",
     backup_name: str = "SyncApp canary test",
+    backup_type: str = "partial",
     homeassistant_version: str = "2026.9.0",
+    exclude_database: bool = True,
     include_homeassistant: bool = True,
     inner_metadata_name: str = "./homeassistant.json",
     inner_data_name: str = "./data/configuration.yaml",
@@ -33,10 +35,10 @@ def make_backup_archive(
         {
             "slug": slug,
             "name": backup_name,
-            "type": "partial",
+            "type": backup_type,
             "homeassistant": {
                 "version": homeassistant_version,
-                "exclude_database": True,
+                "exclude_database": exclude_database,
             },
         }
     ).encode("utf-8")
@@ -65,6 +67,8 @@ class BackupArchiveTests(unittest.TestCase):
         self.assertTrue(evidence["outer_tar_readable"])
         self.assertTrue(evidence["backup_metadata_present"])
         self.assertTrue(evidence["backup_identity_verified"])
+        self.assertTrue(evidence["partial_backup_verified"])
+        self.assertTrue(evidence["homeassistant_database_excluded"])
         self.assertTrue(evidence["homeassistant_archive_present"])
         self.assertTrue(evidence["homeassistant_archive_readable"])
         self.assertTrue(evidence["homeassistant_metadata_present"])
@@ -86,6 +90,14 @@ class BackupArchiveTests(unittest.TestCase):
                 expected_slug="backup-slug",
                 expected_name="SyncApp canary test",
             )
+
+    def test_downloaded_backup_must_be_partial(self):
+        with self.assertRaisesRegex(BackupArchiveError, "requested partial backup"):
+            self._verify(make_backup_archive(backup_type="full"))
+
+    def test_downloaded_backup_must_confirm_database_exclusion(self):
+        with self.assertRaisesRegex(BackupArchiveError, "database exclusion"):
+            self._verify(make_backup_archive(exclude_database=False))
 
     def test_downloaded_homeassistant_version_must_match_api_evidence(self):
         with self.assertRaisesRegex(BackupArchiveError, "version does not match"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import tarfile
@@ -89,14 +90,65 @@ def _read_metadata_json(
     return data
 
 
+def _validated_expected_hashes(
+    expected: dict[str, str] | None,
+) -> dict[str, str] | None:
+    if expected is None:
+        return None
+    if not expected:
+        raise BackupArchiveError("expected live-file backup coverage cannot be empty")
+    validated: dict[str, str] = {}
+    for relative, digest in expected.items():
+        if not isinstance(relative, str) or not relative:
+            raise BackupArchiveError("expected live-file path is empty or invalid")
+        path = PurePosixPath(relative)
+        if path.is_absolute() or ".." in path.parts or "\\" in relative or "\x00" in relative:
+            raise BackupArchiveError("expected live-file path is unsafe")
+        normalized = "/".join(part for part in path.parts if part not in {"", "."})
+        if not normalized or normalized != relative:
+            raise BackupArchiveError("expected live-file path is not canonical")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise BackupArchiveError("expected live-file SHA-256 digest is invalid")
+        if normalized in validated:
+            raise BackupArchiveError("duplicate expected live-file path")
+        validated[normalized] = digest
+    return validated
+
+
+def _hash_member(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str:
+    stream = archive.extractfile(member)
+    if stream is None:
+        raise BackupArchiveError("cannot read expected Home Assistant backup data member")
+    digest = hashlib.sha256()
+    observed = 0
+    with stream:
+        while True:
+            chunk = stream.read(min(1024 * 1024, member.size - observed + 1))
+            if not chunk:
+                break
+            observed += len(chunk)
+            if observed > member.size:
+                raise BackupArchiveError("backup data member exceeds its declared size")
+            digest.update(chunk)
+    if observed != member.size:
+        raise BackupArchiveError("backup data member is shorter than its declared size")
+    return digest.hexdigest()
+
+
 def verify_backup_archive(
     path: Path,
     *,
     expected_slug: str | None = None,
     expected_name: str | None = None,
     expected_homeassistant_version: str | None = None,
+    expected_data_sha256: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Verify a downloaded Supervisor backup without extracting configuration data."""
+    expected_hashes = _validated_expected_hashes(expected_data_sha256)
     outer_count = 0
     outer_logical_bytes = 0
     backup_json_members: list[tarfile.TarInfo] = []
@@ -170,6 +222,7 @@ def verify_backup_archive(
             inner_logical_bytes = 0
             homeassistant_json_members: list[tarfile.TarInfo] = []
             data_file_count = 0
+            verified_expected: set[str] = set()
             try:
                 with inner_stream, tarfile.open(fileobj=inner_stream, mode="r:*") as inner:
                     for member in inner:
@@ -182,6 +235,17 @@ def verify_backup_archive(
                             homeassistant_json_members.append(member)
                         elif name.startswith("data/") and member.isfile():
                             data_file_count += 1
+                            relative = name.removeprefix("data/")
+                            if expected_hashes is not None and relative in expected_hashes:
+                                if relative in verified_expected:
+                                    raise BackupArchiveError(
+                                        "Home Assistant backup contains duplicate expected data path"
+                                    )
+                                if _hash_member(inner, member) != expected_hashes[relative]:
+                                    raise BackupArchiveError(
+                                        "Home Assistant backup data does not match live file bytes"
+                                    )
+                                verified_expected.add(relative)
                     if len(homeassistant_json_members) != 1:
                         raise BackupArchiveError(
                             "Home Assistant component archive does not contain exactly one homeassistant.json"
@@ -202,11 +266,16 @@ def verify_backup_archive(
                 raise BackupArchiveError(
                     "Home Assistant component archive does not contain configuration data files"
                 )
+            if expected_hashes is not None and verified_expected != set(expected_hashes):
+                raise BackupArchiveError(
+                    "Home Assistant backup is missing one or more expected live files"
+                )
     except BackupArchiveError:
         raise
     except (tarfile.TarError, OSError) as exc:
         raise BackupArchiveError("downloaded Supervisor backup tar is not structurally readable") from exc
 
+    expected_count = len(expected_hashes) if expected_hashes is not None else 0
     return {
         "outer_tar_readable": True,
         "outer_member_count": outer_count,
@@ -224,4 +293,6 @@ def verify_backup_archive(
         "homeassistant_metadata_present": True,
         "homeassistant_version_matches_api": expected_homeassistant_version is not None,
         "homeassistant_data_files": data_file_count,
+        "expected_live_files": expected_count,
+        "expected_live_files_byte_verified": expected_hashes is not None,
     }

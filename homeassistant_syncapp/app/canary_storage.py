@@ -8,6 +8,7 @@ from syncapp.canary_storage import (
     DEFAULT_ARCHIVE_MAX_BYTES,
     DEFAULT_DATA_ROOT,
     DEFAULT_FREE_RESERVE_BYTES,
+    DEFAULT_LIVE_ROOT,
     run_backup_storage_probe,
 )
 from syncapp.supervisor import SupervisorClient
@@ -19,9 +20,9 @@ MIB = 1024 * 1024
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a fresh verified Home Assistant backup, download and structurally "
-            "verify it under /data, and record storage/timing evidence for disposable "
-            "HAOS production-readiness testing."
+            "Create a fresh verified Home Assistant backup, download and byte-verify "
+            "its policy-approved live configuration under /data, and record "
+            "storage/timing evidence for disposable HAOS production-readiness testing."
         )
     )
     parser.add_argument(
@@ -46,6 +47,7 @@ def main() -> int:
     result = run_backup_storage_probe(
         SupervisorClient(),
         data_root=Path(DEFAULT_DATA_ROOT),
+        live_root=Path(DEFAULT_LIVE_ROOT),
         max_bytes=args.archive_max_mib * MIB,
         reserve_bytes=args.free_reserve_mib * MIB,
     )

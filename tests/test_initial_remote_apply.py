@@ -84,6 +84,35 @@ class InitialRemoteApplyTests(unittest.TestCase):
             repository.adopt_remote.assert_called_once_with(commit)
             self.assertTrue(settings.manifest_path.exists())
 
+    def test_symlink_parent_cannot_hide_matching_bytes_as_noop_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = self._settings(root)
+            settings.source_dir.mkdir(parents=True)
+            settings.staging_dir.mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            (settings.staging_dir / "packages").mkdir()
+            content = "same: true\n"
+            (outside / "same.yaml").write_text(content, encoding="utf-8")
+            (settings.staging_dir / "packages" / "same.yaml").write_text(content, encoding="utf-8")
+            (settings.source_dir / "packages").symlink_to(outside, target_is_directory=True)
+
+            commit = "e" * 40
+            staged = StagingResult(commit=commit, file_count=1, total_bytes=len(content))
+            repository = MagicMock()
+            repository.head.return_value = commit
+
+            with patch("syncapp.apply.SupervisorClient") as supervisor_factory:
+                with self.assertRaisesRegex(TransactionError, "compare staged candidate.*safely"):
+                    apply_staged_initial_remote(repository, settings, staged)
+
+            supervisor_factory.assert_not_called()
+            repository.fetch.assert_not_called()
+            repository.adopt_remote.assert_not_called()
+            self.assertFalse(settings.manifest_path.exists())
+            self.assertEqual((outside / "same.yaml").read_text(), content)
+
     def test_noop_bootstrap_does_not_establish_baseline_when_semantic_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

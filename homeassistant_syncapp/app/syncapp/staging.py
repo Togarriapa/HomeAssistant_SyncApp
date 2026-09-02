@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -43,12 +44,23 @@ class StagingResult:
     commit: str
     file_count: int
     total_bytes: int
+    file_sha256: tuple[tuple[str, str], ...] = ()
+    integrity_bound: bool = False
+
+    @property
+    def file_hashes(self) -> dict[str, str]:
+        return dict(self.file_sha256)
 
 
 @dataclass(frozen=True, slots=True)
 class DirectoryValidationResult:
     file_count: int
     total_bytes: int
+    file_sha256: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def file_hashes(self) -> dict[str, str]:
+        return dict(self.file_sha256)
 
 
 def _validate_entry(entry: GitTreeEntry) -> None:
@@ -64,29 +76,29 @@ def _validate_entry(entry: GitTreeEntry) -> None:
         raise StagingValidationError(f"remote path is blocked by policy: {entry.path}")
 
 
-def _read_utf8(path: Path, relative: str, kind: str) -> str:
+def _decode_utf8(raw: bytes, relative: str, kind: str) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StagingValidationError(f"invalid UTF-8 {kind} in {relative}: {exc}") from exc
 
 
-def _validate_file(path: Path, relative: str) -> None:
-    suffix = path.suffix.lower()
+def _validate_file_bytes(relative: str, raw: bytes) -> None:
+    suffix = Path(relative).suffix.lower()
     if suffix in {".yaml", ".yml"}:
-        text = _read_utf8(path, relative, "YAML")
+        text = _decode_utf8(raw, relative, "YAML")
         try:
             list(yaml.load_all(text, Loader=_HomeAssistantLoader))
         except yaml.YAMLError as exc:
             raise StagingValidationError(f"invalid YAML in {relative}: {exc}") from exc
     elif suffix == ".json":
-        text = _read_utf8(path, relative, "JSON")
+        text = _decode_utf8(raw, relative, "JSON")
         try:
             json.loads(text)
         except json.JSONDecodeError as exc:
             raise StagingValidationError(f"invalid JSON in {relative}: {exc}") from exc
     elif suffix == ".py":
-        text = _read_utf8(path, relative, "Python")
+        text = _decode_utf8(raw, relative, "Python")
         try:
             ast.parse(text, filename=relative)
         except SyntaxError as exc:
@@ -94,14 +106,21 @@ def _validate_file(path: Path, relative: str) -> None:
 
 
 def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
-    """Validate exactly the policy-allowed files in a materialized configuration tree."""
+    """Validate and hash exactly the policy-allowed bytes in a materialized tree."""
     files = sorted(collect_allowed_files(root))
     total_bytes = 0
+    hashes: list[tuple[str, str]] = []
     for relative in files:
         path = root / relative
         if path.is_symlink() or not path.is_file():
             raise StagingValidationError(f"configuration path is not a regular file: {relative}")
-        size = path.stat().st_size
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise StagingValidationError(
+                f"cannot read configuration path {relative!r} during validation: {exc}"
+            ) from exc
+        size = len(raw)
         if size > MAX_FILE_BYTES:
             raise StagingValidationError(
                 f"configuration path {relative!r} exceeds {MAX_FILE_BYTES} byte limit"
@@ -111,8 +130,32 @@ def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
             raise StagingValidationError(
                 f"configuration tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
             )
-        _validate_file(path, relative)
-    return DirectoryValidationResult(file_count=len(files), total_bytes=total_bytes)
+        _validate_file_bytes(relative, raw)
+        hashes.append((relative, hashlib.sha256(raw).hexdigest()))
+    return DirectoryValidationResult(
+        file_count=len(files),
+        total_bytes=total_bytes,
+        file_sha256=tuple(hashes),
+    )
+
+
+def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
+    """Re-prove that the staging tree still equals the exact bytes that passed validation."""
+    if not staged.integrity_bound:
+        return
+    validated = validate_configuration_directory(root)
+    if validated.file_count != staged.file_count:
+        raise StagingValidationError(
+            "staging file count changed after validation"
+        )
+    if validated.total_bytes != staged.total_bytes:
+        raise StagingValidationError(
+            "staging total byte count changed after validation"
+        )
+    if validated.file_sha256 != staged.file_sha256:
+        raise StagingValidationError(
+            "staging path/content hash manifest changed after validation"
+        )
 
 
 def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> StagingResult:
@@ -168,4 +211,10 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
         shutil.rmtree(temporary, ignore_errors=True)
         raise
 
-    return StagingResult(commit=remote, file_count=len(planned), total_bytes=total_bytes)
+    return StagingResult(
+        commit=remote,
+        file_count=len(planned),
+        total_bytes=total_bytes,
+        file_sha256=validated.file_sha256,
+        integrity_bound=True,
+    )

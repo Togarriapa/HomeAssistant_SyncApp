@@ -40,6 +40,21 @@ The reserve is also rechecked immediately after the download, before archive par
 
 If capacity is insufficient, reduce the ceiling only when the already-verified backup size makes that safe, or provision more disposable-instance storage. Do not remove the reserve simply to force the probe through.
 
+## Archive parser resource bounds
+
+The transport byte ceiling is not the only resource boundary. A small compressed tar can describe a much larger logical/uncompressed payload, so archive validation applies explicit declared-size limits before advancing past regular-file headers at **both** archive layers:
+
+- outer Supervisor archive: maximum 8 GiB for one regular member and 16 GiB cumulative regular-file logical payload;
+- nested Home Assistant component archive: maximum 2 GiB for one regular member and 8 GiB cumulative regular-file logical payload;
+- maximum tar members remains 100,000 per outer/inner archive;
+- JSON metadata remains capped at 1 MiB.
+
+These bounds are canary parser protections, not claims about normal Home Assistant backup size. The verifier does not extract configuration files. It rejects oversized declared regular members immediately so a compressed or malformed archive cannot turn the diagnostic structural check into effectively unbounded decompression work. A normalized tar member path that collapses to an empty path is also rejected.
+
+The outer limits are intentionally wider than the nested Home Assistant limits because the Supervisor container can carry component metadata or other material in addition to the Home Assistant payload. They are still finite so compression auto-detection at the outer layer cannot bypass the resource model.
+
+If a legitimate disposable-HAOS backup exceeds these logical limits, record that fact in issue #4 before changing them. Do not silently raise the limits merely to make the canary pass; the real backup shape and operational cost are precisely what this canary is intended to characterize.
+
 ## Evidence produced
 
 The probe creates a fresh synchronous partial Home Assistant backup, then reuses the production `verify_homeassistant_backup()` contract before downloading anything. It therefore requires the same exact slug/name/type, Home Assistant content, database exclusion, Home Assistant version, and finite positive matching inventory/detail size evidence as the production Backup stage.
@@ -49,7 +64,7 @@ It then downloads the exact fresh slug to a random temporary directory under `/d
 Successful JSON records:
 
 - production backup verification evidence;
-- archive structural/identity evidence;
+- archive structural/identity evidence, including bounded outer and Home Assistant logical bytes;
 - configured maximum download and reserve;
 - `/data` available bytes initially, immediately before download, after download, and after cleanup;
 - signed available-space deltas during download and after cleanup;
@@ -66,7 +81,8 @@ Keep the JSON together with:
 - the redacted HAOS/Core/Supervisor fingerprint from `python3 /app/canary.py`;
 - the storage location/configuration used by the disposable HAOS instance;
 - whether the backup backend is local or otherwise configured;
-- the backup size reported by Supervisor.
+- the backup size reported by Supervisor;
+- the reported outer and Home Assistant logical bytes from archive validation.
 
 Run the probe more than once if practical. Production-gating decisions should use observed worst-case/representative backup creation and download/verification latency, not a single unusually fast run.
 
@@ -78,6 +94,7 @@ Do **not** make archive download a mandatory production Backup → Apply step me
 2. `/data` has a defensible storage reserve at intended backup sizes;
 3. cleanup is reliable across success and injected transport/archive failures;
 4. the Supervisor storage backend used in production behaves consistently;
-5. the extra read traffic does not create unacceptable I/O pressure.
+5. the extra read/decompression traffic does not create unacceptable CPU or I/O pressure;
+6. real backup logical sizes remain comfortably within the parser's declared-size bounds.
 
 If those conditions are not demonstrated, keep archive validation canary-only and retain the existing production metadata/size continuity gates.

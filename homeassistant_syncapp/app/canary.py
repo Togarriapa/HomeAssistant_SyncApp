@@ -7,13 +7,16 @@ import os
 from pathlib import Path
 import secrets
 import stat
+from tempfile import TemporaryDirectory
 
+from syncapp.backup_archive import BackupArchiveError, verify_backup_archive
 from syncapp.live_fs import LiveFilesystem, LiveFilesystemError
 from syncapp.policy import collect_allowed_files
 from syncapp.supervisor import SupervisorClient
 
 
 DEFAULT_LIVE_ROOT = Path("/homeassistant")
+DEFAULT_BACKUP_ARCHIVE_MAX_MIB = 1024
 CANARY_TEMP_PREFIX = ".syncapp-canary-"
 CANARY_TEMP_SUFFIX = ".tmp"
 
@@ -118,6 +121,32 @@ def _verify_created_backup(
         if field in backup:
             evidence[field] = backup[field]
     return evidence
+
+
+def _run_backup_archive_probe(
+    client: SupervisorClient,
+    *,
+    slug: str,
+    max_bytes: int,
+) -> dict[str, object]:
+    """Download and structurally validate a fresh backup without extracting its data."""
+    with TemporaryDirectory(prefix="syncapp-backup-canary-") as temporary:
+        destination = Path(temporary) / "backup.tar"
+        downloaded_bytes = client.download_backup(
+            slug,
+            destination,
+            max_bytes=max_bytes,
+        )
+        try:
+            evidence = verify_backup_archive(destination)
+        except BackupArchiveError as exc:
+            raise RuntimeError(f"downloaded backup archive canary failed: {exc}") from exc
+    return {
+        "download_verified": True,
+        "downloaded_bytes": downloaded_bytes,
+        **evidence,
+        "temporary_download_removed": True,
+    }
 
 
 def _allowed_live_snapshot(root: Path) -> dict[str, str]:
@@ -338,6 +367,8 @@ def run_canary(
     client: SupervisorClient,
     *,
     create_backup: bool = False,
+    backup_archive_probe: bool = False,
+    backup_archive_max_bytes: int = DEFAULT_BACKUP_ARCHIVE_MAX_MIB * 1024 * 1024,
     restart: bool = False,
     timeout_seconds: int = 120,
     filesystem: bool = False,
@@ -349,6 +380,10 @@ def run_canary(
     if restart and not create_backup:
         raise RuntimeError(
             "refusing canary Core restart without a fresh inventory-verified backup"
+        )
+    if backup_archive_probe and not create_backup:
+        raise RuntimeError(
+            "refusing backup archive probe without a fresh canary backup"
         )
 
     prove_live_invariance = filesystem or filesystem_write_probe
@@ -378,6 +413,12 @@ def run_canary(
             slug=backup_slug,
             expected_name=backup_name,
         )
+        if backup_archive_probe:
+            result["backup_archive"] = _run_backup_archive_probe(
+                client,
+                slug=backup_slug,
+                max_bytes=backup_archive_max_bytes,
+            )
 
     if restart:
         client.restart_core()
@@ -411,6 +452,23 @@ def main() -> int:
         help="also create and verify a synchronous partial Home Assistant backup",
     )
     parser.add_argument(
+        "--backup-archive-probe",
+        action="store_true",
+        help=(
+            "download the fresh --backup tar to temporary storage and verify its outer "
+            "and Home Assistant component archive structure before deleting the download"
+        ),
+    )
+    parser.add_argument(
+        "--backup-archive-max-mib",
+        type=int,
+        default=DEFAULT_BACKUP_ARCHIVE_MAX_MIB,
+        help=(
+            "hard temporary-download ceiling in MiB for --backup-archive-probe "
+            f"(default: {DEFAULT_BACKUP_ARCHIVE_MAX_MIB})"
+        ),
+    )
+    parser.add_argument(
         "--restart",
         action="store_true",
         help="restart Core only after --backup has created and verified a fresh backup",
@@ -442,12 +500,18 @@ def main() -> int:
     args = parser.parse_args()
     if not 30 <= args.timeout <= 600:
         parser.error("--timeout must be between 30 and 600 seconds")
+    if not 16 <= args.backup_archive_max_mib <= 8192:
+        parser.error("--backup-archive-max-mib must be between 16 and 8192")
     if args.restart and not args.backup:
         parser.error("--restart requires --backup")
+    if args.backup_archive_probe and not args.backup:
+        parser.error("--backup-archive-probe requires --backup")
 
     result = run_canary(
         SupervisorClient(),
         create_backup=args.backup,
+        backup_archive_probe=args.backup_archive_probe,
+        backup_archive_max_bytes=args.backup_archive_max_mib * 1024 * 1024,
         restart=args.restart,
         timeout_seconds=args.timeout,
         filesystem=args.filesystem,

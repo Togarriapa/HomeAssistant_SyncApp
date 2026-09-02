@@ -5,7 +5,13 @@ import tarfile
 import tempfile
 import unittest
 
-from syncapp.backup_archive import BackupArchiveError, verify_backup_archive
+from syncapp.backup_archive import (
+    BackupArchiveError,
+    MAX_HOMEASSISTANT_LOGICAL_BYTES,
+    MAX_HOMEASSISTANT_MEMBER_BYTES,
+    _bounded_regular_size,
+    verify_backup_archive,
+)
 
 
 def _add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:
@@ -71,6 +77,8 @@ class BackupArchiveTests(unittest.TestCase):
         self.assertTrue(evidence["homeassistant_database_excluded"])
         self.assertTrue(evidence["homeassistant_archive_present"])
         self.assertTrue(evidence["homeassistant_archive_readable"])
+        self.assertTrue(evidence["homeassistant_logical_size_bounded"])
+        self.assertGreater(evidence["homeassistant_logical_bytes"], 0)
         self.assertTrue(evidence["homeassistant_metadata_present"])
         self.assertTrue(evidence["homeassistant_version_matches_api"])
         self.assertEqual(evidence["homeassistant_data_files"], 1)
@@ -121,6 +129,10 @@ class BackupArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(BackupArchiveError, "unsafe member path"):
             self._verify(make_backup_archive(inner_data_name="../configuration.yaml"))
 
+    def test_empty_normalized_member_path_fails_closed(self):
+        with self.assertRaisesRegex(BackupArchiveError, "empty normalized member path"):
+            self._verify(make_backup_archive(inner_data_name="."))
+
     def test_missing_homeassistant_metadata_fails_closed(self):
         with self.assertRaisesRegex(BackupArchiveError, "exactly one homeassistant.json"):
             self._verify(make_backup_archive(inner_metadata_name="./other.json"))
@@ -128,6 +140,24 @@ class BackupArchiveTests(unittest.TestCase):
     def test_missing_homeassistant_data_tree_fails_closed(self):
         with self.assertRaisesRegex(BackupArchiveError, "configuration data files"):
             self._verify(make_backup_archive(inner_data_name="./other/configuration.yaml"))
+
+    def test_single_declared_regular_member_size_is_bounded_before_payload_read(self):
+        member = tarfile.TarInfo("data/huge.yaml")
+        member.size = MAX_HOMEASSISTANT_MEMBER_BYTES + 1
+        with self.assertRaisesRegex(BackupArchiveError, "logical member limit"):
+            _bounded_regular_size(0, member)
+
+    def test_cumulative_declared_logical_size_is_bounded(self):
+        member = tarfile.TarInfo("data/large.yaml")
+        member.size = 2
+        with self.assertRaisesRegex(BackupArchiveError, "logical payload limit"):
+            _bounded_regular_size(MAX_HOMEASSISTANT_LOGICAL_BYTES - 1, member)
+
+    def test_non_regular_members_do_not_inflate_logical_payload_budget(self):
+        member = tarfile.TarInfo("data/")
+        member.type = tarfile.DIRTYPE
+        member.size = MAX_HOMEASSISTANT_LOGICAL_BYTES + 1
+        self.assertEqual(_bounded_regular_size(123, member), 123)
 
 
 if __name__ == "__main__":

@@ -65,8 +65,6 @@ def _verify_created_backup(
 ) -> dict[str, object]:
     """Use the production backup verifier for canary evidence too."""
     try:
-        # Call the production implementation explicitly so lightweight canary test
-        # clients exercise the exact same evidence contract without duplicating it.
         return SupervisorClient.verify_homeassistant_backup(client, slug, expected_name)
     except SupervisorError as exc:
         raise RuntimeError(f"Supervisor backup verification failed: {exc}") from exc
@@ -76,6 +74,8 @@ def _run_backup_archive_probe(
     client: SupervisorClient,
     *,
     slug: str,
+    expected_name: str,
+    expected_homeassistant_version: str,
     max_bytes: int,
 ) -> dict[str, object]:
     """Download and structurally validate a fresh backup without extracting its data."""
@@ -87,7 +87,12 @@ def _run_backup_archive_probe(
             max_bytes=max_bytes,
         )
         try:
-            evidence = verify_backup_archive(destination)
+            evidence = verify_backup_archive(
+                destination,
+                expected_slug=slug,
+                expected_name=expected_name,
+                expected_homeassistant_version=expected_homeassistant_version,
+            )
         except BackupArchiveError as exc:
             raise RuntimeError(f"downloaded backup archive canary failed: {exc}") from exc
     return {
@@ -357,15 +362,23 @@ def run_canary(
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         backup_name = f"SyncApp canary {stamp}"
         backup_slug = client.create_homeassistant_backup(backup_name)
-        result["backup"] = _verify_created_backup(
+        backup_evidence = _verify_created_backup(
             client,
             slug=backup_slug,
             expected_name=backup_name,
         )
+        result["backup"] = backup_evidence
         if backup_archive_probe:
+            homeassistant_version = backup_evidence.get("homeassistant_version")
+            if not isinstance(homeassistant_version, str) or not homeassistant_version:
+                raise RuntimeError(
+                    "verified backup evidence lost the Home Assistant version before archive proof"
+                )
             result["backup_archive"] = _run_backup_archive_probe(
                 client,
                 slug=backup_slug,
+                expected_name=backup_name,
+                expected_homeassistant_version=homeassistant_version,
                 max_bytes=backup_archive_max_bytes,
             )
 

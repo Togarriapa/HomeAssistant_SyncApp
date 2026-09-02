@@ -79,12 +79,15 @@ This is deliberately an **opt-in canary escalation**, not a production Backup â†
 python3 /app/canary.py --filesystem --backup --backup-archive-probe --backup-archive-max-mib 2048
 ```
 
+When the HTTP response provides `Content-Length`, the downloader rejects malformed or non-positive values, refuses a declared length above the configured ceiling before consuming the body, and requires the final byte count to match. The streaming byte ceiling remains authoritative even when `Content-Length` is absent or inaccurate. A failed, truncated, oversized, empty, HTTP-error, or transport-error download removes its partial temporary file.
+
 The downloaded archive is never extracted into the filesystem. SyncApp only parses tar headers, reads tightly bounded metadata JSON, and streams the embedded Home Assistant component tar. Success requires:
 
 - the complete outer tar to be structurally readable;
 - exactly one bounded, non-empty, valid-JSON `backup.json`;
 - `backup.json` to identify the exact fresh canary slug and requested name;
-- `backup.json` to describe Home Assistant content with the same Home Assistant version proven by the Supervisor API;
+- `backup.json` to report `type: partial`;
+- `backup.json` to describe Home Assistant content, confirm database exclusion, and report the same Home Assistant version proven by the Supervisor API;
 - exactly one non-empty `homeassistant.tar` or `homeassistant.tar.gz`;
 - the embedded Home Assistant tar to be structurally readable;
 - exactly one bounded, non-empty, valid-JSON `homeassistant.json` inside that component archive;
@@ -92,7 +95,7 @@ The downloaded archive is never extracted into the filesystem. SyncApp only pars
 - no absolute, traversal, backslash-based, or otherwise unsafe archive member paths;
 - the temporary downloaded tar to be removed when the probe finishes.
 
-Metadata members are capped at 1 MiB and each tar traversal is capped at 100,000 members. The streaming client refuses to overwrite an existing destination, deletes a partial temporary file after download/size/HTTP failure, and fails rather than consuming unlimited temporary storage. The JSON evidence reports counts and proof booleans only; it does not expose configuration filenames, file contents, hashes, backup passwords, or extracted data.
+Metadata members are capped at 1 MiB and each tar traversal is capped at 100,000 members. The streaming client refuses to overwrite an existing destination and fails rather than consuming unlimited temporary storage. The JSON evidence reports counts and proof booleans only; it does not expose configuration filenames, file contents, hashes, backup passwords, or extracted data.
 
 To combine archive validation with the restart test, use:
 
@@ -100,7 +103,7 @@ To combine archive validation with the restart test, use:
 python3 /app/canary.py --filesystem --backup --backup-archive-probe --restart --timeout 120
 ```
 
-Archive download, identity binding, and structural verification complete **before** Core restart. Any mismatched backup identity/version, malformed/truncated outer tar, or malformed Home Assistant component tar therefore blocks the optional restart. This check is useful evidence for issue #4 because successful Supervisor metadata alone does not prove that the actual downloadable artifact is the same backup or can be traversed as a backup archive.
+Archive download, identity binding, and structural verification complete **before** Core restart. Any transport-length mismatch, mismatched backup identity/type/database-exclusion/version, malformed/truncated outer tar, or malformed Home Assistant component tar therefore blocks the optional restart. This check is useful evidence for issue #4 because successful Supervisor metadata alone does not prove that the actual downloadable artifact is the same backup or can be traversed as a backup archive.
 
 Do not automatically promote this archive read into the production remote-apply transaction until disposable-HAOS evidence establishes realistic download latency, temporary-storage consumption, and behavior for the intended backup sizes/storage locations. The production transaction continues to rely on the pinned local rollback snapshot plus Supervisor metadata/size continuity gates.
 
@@ -112,4 +115,4 @@ Only after all preceding levels pass should the disposable instance test an actu
 
 Keep both `dry_run: true` and `remote_apply_enabled: false` while establishing the initial canary evidence. Enable live remote mutation only on the disposable instance and only for the issue #4 acceptance matrix.
 
-The canary helper is not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup metadata probe proves Supervisor recorded the requested Home Assistant backup contents and size evidence, the archive probe binds the fresh downloaded artifact to that backup and proves its outer and embedded Home Assistant archives are structurally traversable, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, restoreability on another machine, or exact Git adoption.
+The canary helper is not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup metadata probe proves Supervisor recorded the requested Home Assistant backup contents and size evidence, the archive probe binds the fresh downloaded artifact to that backup and proves its transport, outer tar, and embedded Home Assistant archive are structurally coherent, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, restoreability on another machine, or exact Git adoption.

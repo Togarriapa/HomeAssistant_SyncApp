@@ -225,8 +225,9 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
             installed = True
             staging_fs.assert_path_identity(staging_dir)
     except StagingFilesystemError as exc:
-        if not installed and os.path.lexists(temporary) and not temporary.is_symlink():
-            shutil.rmtree(temporary, ignore_errors=True)
+        # A confinement failure means a pathname may no longer name the tree that
+        # SyncApp actually opened. Preserve that evidence rather than recursively
+        # deleting an object whose identity is now ambiguous.
         raise StagingValidationError(f"staging filesystem confinement failed: {exc}") from exc
     except Exception:
         if not installed and os.path.lexists(temporary) and not temporary.is_symlink():

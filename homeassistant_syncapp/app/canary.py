@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from syncapp.backup_archive import BackupArchiveError, verify_backup_archive
 from syncapp.live_fs import LiveFilesystem, LiveFilesystemError
 from syncapp.policy import collect_allowed_files
-from syncapp.supervisor import SupervisorClient
+from syncapp.supervisor import SupervisorClient, SupervisorError
 
 
 DEFAULT_LIVE_ROOT = Path("/homeassistant")
@@ -63,64 +63,13 @@ def _verify_created_backup(
     slug: str,
     expected_name: str,
 ) -> dict[str, object]:
-    """Prove the synchronous partial backup contains the requested HA payload."""
-    matches = [item for item in client.list_backups() if item.get("slug") == slug]
-    if len(matches) != 1:
-        raise RuntimeError(
-            "Supervisor backup inventory did not contain exactly one entry for "
-            f"newly created canary backup slug {slug!r}"
-        )
-
-    backup = matches[0]
-    name = backup.get("name")
-    if name != expected_name:
-        raise RuntimeError(
-            "Supervisor backup inventory entry name did not match the canary request: "
-            f"expected {expected_name!r}, got {name!r}"
-        )
-    if backup.get("type") != "partial":
-        raise RuntimeError(
-            "Supervisor backup inventory entry was not the requested partial backup: "
-            f"got type {backup.get('type')!r}"
-        )
-    content = backup.get("content")
-    if not isinstance(content, dict) or content.get("homeassistant") is not True:
-        raise RuntimeError(
-            "Supervisor backup inventory does not prove the canary backup contains "
-            "Home Assistant data"
-        )
-
-    details = client.backup_info(slug)
-    if details.get("slug") != slug:
-        raise RuntimeError("Supervisor backup detail slug did not match the created backup")
-    if details.get("name") != expected_name:
-        raise RuntimeError("Supervisor backup detail name did not match the canary request")
-    if details.get("type") != "partial":
-        raise RuntimeError("Supervisor backup details did not report a partial backup")
-    homeassistant_version = details.get("homeassistant")
-    if not isinstance(homeassistant_version, str) or not homeassistant_version.strip():
-        raise RuntimeError(
-            "Supervisor backup details did not prove Home Assistant content is present"
-        )
-    if details.get("homeassistant_exclude_database") is not True:
-        raise RuntimeError(
-            "Supervisor backup details did not confirm Home Assistant database exclusion"
-        )
-
-    evidence: dict[str, object] = {
-        "slug": slug,
-        "name_matches_request": True,
-        "type": "partial",
-        "inventory_verified": True,
-        "homeassistant_content_verified": True,
-        "homeassistant_version": homeassistant_version,
-        "homeassistant_database_excluded": True,
-        "detail_verified": True,
-    }
-    for field in ("date", "protected"):
-        if field in backup:
-            evidence[field] = backup[field]
-    return evidence
+    """Use the production backup verifier for canary evidence too."""
+    try:
+        # Call the production implementation explicitly so lightweight canary test
+        # clients exercise the exact same evidence contract without duplicating it.
+        return SupervisorClient.verify_homeassistant_backup(client, slug, expected_name)
+    except SupervisorError as exc:
+        raise RuntimeError(f"Supervisor backup verification failed: {exc}") from exc
 
 
 def _run_backup_archive_probe(

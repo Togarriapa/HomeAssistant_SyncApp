@@ -170,10 +170,27 @@ class SupervisorClient:
             headers={"Authorization": f"Bearer {self.token}"},
         )
         total = 0
+        declared_length: int | None = None
         try:
             with os.fdopen(fd, "wb", closefd=True) as output:
                 try:
                     with urlopen(request, timeout=timeout) as response:
+                        raw_length = response.headers.get("Content-Length")
+                        if raw_length is not None:
+                            try:
+                                declared_length = int(raw_length)
+                            except (TypeError, ValueError) as exc:
+                                raise SupervisorError(
+                                    "Supervisor backup download returned an invalid Content-Length"
+                                ) from exc
+                            if declared_length <= 0:
+                                raise SupervisorError(
+                                    "Supervisor backup download returned a non-positive Content-Length"
+                                )
+                            if declared_length > max_bytes:
+                                raise SupervisorError(
+                                    "Supervisor backup download Content-Length exceeds the configured canary byte limit"
+                                )
                         while True:
                             chunk = response.read(1024 * 1024)
                             if not chunk:
@@ -197,6 +214,10 @@ class SupervisorClient:
                     raise SupervisorError(f"Supervisor request {path} failed: {exc}") from exc
                 if total <= 0:
                     raise SupervisorError("Supervisor backup download returned no bytes")
+                if declared_length is not None and total != declared_length:
+                    raise SupervisorError(
+                        "Supervisor backup download byte count did not match Content-Length"
+                    )
                 output.flush()
                 os.fsync(output.fileno())
         except Exception:

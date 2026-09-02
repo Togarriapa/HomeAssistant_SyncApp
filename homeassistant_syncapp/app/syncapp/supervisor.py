@@ -236,7 +236,9 @@ class SupervisorClient:
             raise SupervisorError(
                 "Supervisor backup inventory does not prove the backup contains Home Assistant data"
             )
-        inventory_size = self._backup_size_mb(backup.get("size"), "backup inventory")
+        inventory_size = SupervisorClient._backup_size_mb(
+            backup.get("size"), "backup inventory"
+        )
 
         details = self.backup_info(slug)
         if details.get("slug") != slug:
@@ -254,7 +256,9 @@ class SupervisorClient:
             raise SupervisorError(
                 "Supervisor backup details did not confirm Home Assistant database exclusion"
             )
-        detail_size = self._backup_size_mb(details.get("size"), "backup details")
+        detail_size = SupervisorClient._backup_size_mb(
+            details.get("size"), "backup details"
+        )
         if detail_size != inventory_size:
             raise SupervisorError(
                 "Supervisor backup inventory/detail size did not match for the created backup"

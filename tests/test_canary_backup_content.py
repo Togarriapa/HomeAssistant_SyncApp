@@ -35,6 +35,7 @@ class BackupEvidenceClient:
                 "slug": "backup-slug",
                 "name": self.name,
                 "type": "partial",
+                "size": 1.5,
                 "content": self.inventory_content,
             }
         ]
@@ -46,6 +47,7 @@ class BackupEvidenceClient:
             "slug": slug,
             "name": self.name,
             "type": "partial",
+            "size": "1.5",
             "homeassistant": "2026.9.0",
             "homeassistant_exclude_database": True,
         }
@@ -70,6 +72,7 @@ class CanaryBackupContentTests(unittest.TestCase):
             "slug": "different",
             "name": None,
             "type": "partial",
+            "size": "1.5",
             "homeassistant": "2026.9.0",
             "homeassistant_exclude_database": True,
         }
@@ -78,28 +81,34 @@ class CanaryBackupContentTests(unittest.TestCase):
 
     def test_backup_detail_requires_homeassistant_version(self) -> None:
         client = BackupEvidenceClient()
+
         def details() -> dict:
             return {
                 "slug": "backup-slug",
                 "name": client.name,
                 "type": "partial",
+                "size": "1.5",
                 "homeassistant": "",
                 "homeassistant_exclude_database": True,
             }
+
         client.backup_info = lambda slug: details()  # type: ignore[method-assign]
         with self.assertRaisesRegex(RuntimeError, "Home Assistant content is present"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
 
     def test_backup_detail_requires_database_exclusion(self) -> None:
         client = BackupEvidenceClient()
+
         def details() -> dict:
             return {
                 "slug": "backup-slug",
                 "name": client.name,
                 "type": "partial",
+                "size": "1.5",
                 "homeassistant": "2026.9.0",
                 "homeassistant_exclude_database": False,
             }
+
         client.backup_info = lambda slug: details()  # type: ignore[method-assign]
         with self.assertRaisesRegex(RuntimeError, "database exclusion"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]

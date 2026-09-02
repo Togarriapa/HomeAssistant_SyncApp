@@ -31,6 +31,8 @@ class ArchiveCanaryClient:
         self.backup_name: str | None = None
         self.archive = archive if archive is not None else make_backup_archive()
         self.download_limit: int | None = None
+        self.inventory_size: object = 1.5
+        self.detail_size: object = "1.5"
 
     def core_info(self) -> dict:
         self.calls.append("core-info")
@@ -64,6 +66,7 @@ class ArchiveCanaryClient:
                 "slug": "backup-slug",
                 "name": self.backup_name,
                 "type": "partial",
+                "size": self.inventory_size,
                 "content": {"homeassistant": True},
             }
         ]
@@ -74,6 +77,7 @@ class ArchiveCanaryClient:
             "slug": slug,
             "name": self.backup_name,
             "type": "partial",
+            "size": self.detail_size,
             "homeassistant": "2026.9.0",
             "homeassistant_exclude_database": True,
         }
@@ -111,8 +115,12 @@ class CanaryBackupArchiveTests(unittest.TestCase):
             restart=True,
             timeout_seconds=90,
         )
+        self.assertLess(client.calls.index("backup-info"), client.calls.index("backup-download"))
         self.assertLess(client.calls.index("backup-download"), client.calls.index("restart"))
         self.assertEqual(client.download_limit, 16 * 1024 * 1024)
+        backup = result["backup"]  # type: ignore[assignment]
+        self.assertTrue(backup["backup_size_verified"])  # type: ignore[index]
+        self.assertEqual(backup["backup_size_mb"], "1.5")  # type: ignore[index]
         archive = result["backup_archive"]  # type: ignore[assignment]
         self.assertTrue(archive["download_verified"])  # type: ignore[index]
         self.assertTrue(archive["outer_tar_readable"])  # type: ignore[index]
@@ -120,6 +128,20 @@ class CanaryBackupArchiveTests(unittest.TestCase):
         self.assertTrue(archive["homeassistant_metadata_present"])  # type: ignore[index]
         self.assertEqual(archive["homeassistant_data_files"], 1)  # type: ignore[index]
         self.assertTrue(archive["temporary_download_removed"])  # type: ignore[index]
+
+    def test_zero_size_metadata_blocks_download_and_restart(self):
+        client = ArchiveCanaryClient()
+        client.inventory_size = 0
+        with self.assertRaisesRegex(RuntimeError, "non-zero size"):
+            run_canary(  # type: ignore[arg-type]
+                client,
+                create_backup=True,
+                backup_archive_probe=True,
+                restart=True,
+            )
+        self.assertNotIn("backup-info", client.calls)
+        self.assertNotIn("backup-download", client.calls)
+        self.assertNotIn("restart", client.calls)
 
     def test_corrupt_download_blocks_restart(self):
         client = ArchiveCanaryClient(archive=b"not a tar archive")

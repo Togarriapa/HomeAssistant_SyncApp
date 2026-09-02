@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -15,6 +16,9 @@ def _add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:
 
 def make_backup_archive(
     *,
+    slug: str = "backup-slug",
+    backup_name: str = "SyncApp canary test",
+    homeassistant_version: str = "2026.9.0",
     include_homeassistant: bool = True,
     inner_metadata_name: str = "./homeassistant.json",
     inner_data_name: str = "./data/configuration.yaml",
@@ -25,29 +29,72 @@ def make_backup_archive(
         _add_bytes(inner, inner_data_name, b"homeassistant:\n")
     inner_bytes = inner_buffer.getvalue()
 
+    metadata = json.dumps(
+        {
+            "slug": slug,
+            "name": backup_name,
+            "type": "partial",
+            "homeassistant": {
+                "version": homeassistant_version,
+                "exclude_database": True,
+            },
+        }
+    ).encode("utf-8")
     outer_buffer = BytesIO()
     with tarfile.open(fileobj=outer_buffer, mode="w") as outer:
-        _add_bytes(outer, "./backup.json", b'{"slug":"backup-slug"}\n')
+        _add_bytes(outer, "./backup.json", metadata)
         if include_homeassistant:
             _add_bytes(outer, "./homeassistant.tar.gz", inner_bytes)
     return outer_buffer.getvalue()
 
 
 class BackupArchiveTests(unittest.TestCase):
-    def _verify(self, payload: bytes) -> dict[str, object]:
+    def _verify(self, payload: bytes, **expected: str) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "backup.tar"
             archive.write_bytes(payload)
-            return verify_backup_archive(archive)
+            return verify_backup_archive(archive, **expected)
 
     def test_valid_supervisor_backup_is_structurally_verified_without_extracting(self):
-        evidence = self._verify(make_backup_archive())
+        evidence = self._verify(
+            make_backup_archive(),
+            expected_slug="backup-slug",
+            expected_name="SyncApp canary test",
+            expected_homeassistant_version="2026.9.0",
+        )
         self.assertTrue(evidence["outer_tar_readable"])
         self.assertTrue(evidence["backup_metadata_present"])
+        self.assertTrue(evidence["backup_identity_verified"])
         self.assertTrue(evidence["homeassistant_archive_present"])
         self.assertTrue(evidence["homeassistant_archive_readable"])
         self.assertTrue(evidence["homeassistant_metadata_present"])
+        self.assertTrue(evidence["homeassistant_version_matches_api"])
         self.assertEqual(evidence["homeassistant_data_files"], 1)
+
+    def test_downloaded_backup_slug_must_match_fresh_backup(self):
+        with self.assertRaisesRegex(BackupArchiveError, "slug does not match"):
+            self._verify(
+                make_backup_archive(slug="different"),
+                expected_slug="backup-slug",
+                expected_name="SyncApp canary test",
+            )
+
+    def test_downloaded_backup_name_must_match_fresh_backup(self):
+        with self.assertRaisesRegex(BackupArchiveError, "name does not match"):
+            self._verify(
+                make_backup_archive(backup_name="different"),
+                expected_slug="backup-slug",
+                expected_name="SyncApp canary test",
+            )
+
+    def test_downloaded_homeassistant_version_must_match_api_evidence(self):
+        with self.assertRaisesRegex(BackupArchiveError, "version does not match"):
+            self._verify(
+                make_backup_archive(homeassistant_version="2026.8.0"),
+                expected_slug="backup-slug",
+                expected_name="SyncApp canary test",
+                expected_homeassistant_version="2026.9.0",
+            )
 
     def test_missing_homeassistant_component_archive_fails_closed(self):
         with self.assertRaisesRegex(BackupArchiveError, "exactly one Home Assistant archive"):

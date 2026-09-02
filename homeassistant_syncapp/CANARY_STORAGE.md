@@ -34,7 +34,9 @@ python3 /app/canary_storage.py --archive-max-mib 2048 --free-reserve-mib 512
 
 PR #29 intentionally bounded the download size but used Python's default temporary directory. On an add-on this may consume the container filesystem rather than SyncApp's persistent application-data mount. This dedicated measurement probe instead places the temporary archive under `/data`, the storage domain SyncApp already uses for its isolated repository, staging, manifest, and transaction evidence.
 
-The probe refuses a symlinked or missing data root. Before creating a Supervisor backup it requires currently available `/data` space to cover the **entire configured maximum download** plus the configured reserve. It repeats the same check after backup creation/metadata verification and immediately before download. This is conservative by design: even if the real backup is much smaller, an absent or misleading HTTP `Content-Length` must not let the canary consume the reserve while streaming up to its configured ceiling.
+The probe refuses a symlinked or missing data root. Before creating a Supervisor backup it requires currently available `/data` space to cover the **entire configured maximum download** plus the configured reserve. It repeats the same check after backup creation/metadata verification and immediately before download. This is conservative by design: even if the real backup is much smaller, an absent or misleading HTTP `Content-Length` must not let the canary intentionally consume the reserve while streaming up to its configured ceiling.
+
+The reserve is also rechecked immediately after the download, before archive parsing. If concurrent storage pressure has pushed available space below the protected reserve despite a clean preflight, the probe aborts and the temporary archive is removed before further validation work. After cleanup, the reserve is checked again; remaining low-space pressure is reported as failure rather than presenting a misleading successful storage result.
 
 If capacity is insufficient, reduce the ceiling only when the already-verified backup size makes that safe, or provision more disposable-instance storage. Do not remove the reserve simply to force the probe through.
 
@@ -51,9 +53,10 @@ Successful JSON records:
 - configured maximum download and reserve;
 - `/data` available bytes initially, immediately before download, after download, and after cleanup;
 - signed available-space deltas during download and after cleanup;
+- explicit proof that the reserve remained available after download and cleanup;
 - monotonic elapsed seconds for backup creation, Supervisor metadata verification, archive download, and archive structural verification.
 
-The available-space deltas are **observations, not invariants**. HAOS and other add-ons may use or free storage concurrently, so the probe does not require the post-cleanup byte count to equal the pre-download count exactly. The important safety invariant is that the temporary directory is removed and the configured reserve was protected by preflight checks.
+The available-space deltas are **observations, not equality invariants**. HAOS and other add-ons may use or free storage concurrently, so the probe does not require the post-cleanup byte count to equal the pre-download count exactly. It does, however, require available space to remain at or above the configured reserve after download and after cleanup. The temporary directory must also be removed.
 
 ## Evidence to retain for issue #4
 

@@ -151,7 +151,7 @@ class CanaryStorageTests(unittest.TestCase):
             root = Path(temporary)
             with mock.patch(
                 "syncapp.canary_storage._available_bytes",
-                side_effect=[1000, 500, 50],
+                side_effect=[2_000_000, 1_500_000, 50],
             ), mock.patch(
                 "syncapp.canary_storage.verify_backup_archive"
             ) as verify_archive:
@@ -159,7 +159,7 @@ class CanaryStorageTests(unittest.TestCase):
                     run_backup_storage_probe(  # type: ignore[arg-type]
                         client,
                         data_root=root,
-                        max_bytes=100,
+                        max_bytes=1024 * 1024,
                         reserve_bytes=100,
                     )
             verify_archive.assert_not_called()
@@ -172,13 +172,13 @@ class CanaryStorageTests(unittest.TestCase):
             root = Path(temporary)
             with mock.patch(
                 "syncapp.canary_storage._available_bytes",
-                side_effect=[1000, 500, 400, 50],
+                side_effect=[2_000_000, 1_500_000, 1_400_000, 50],
             ):
                 with self.assertRaisesRegex(CanaryStorageError, "cleanup completed.*below"):
                     run_backup_storage_probe(  # type: ignore[arg-type]
                         client,
                         data_root=root,
-                        max_bytes=100,
+                        max_bytes=1024 * 1024,
                         reserve_bytes=100,
                     )
             self.assertEqual(list(root.iterdir()), [])

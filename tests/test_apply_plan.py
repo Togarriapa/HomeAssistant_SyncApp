@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from syncapp.transaction import build_apply_plan
+from syncapp.transaction import TransactionError, build_apply_plan
 
 
 class ApplyPlanTests(unittest.TestCase):
@@ -62,6 +62,30 @@ class ApplyPlanTests(unittest.TestCase):
 
             self.assertEqual(plan.write_paths, ("scripts.yaml",))
             self.assertEqual(plan.delete_paths, ())
+
+    def test_matching_bytes_through_symlinked_live_parent_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live = root / "live"
+            staging = root / "staging"
+            outside = root / "outside"
+            live.mkdir()
+            staging.mkdir()
+            outside.mkdir()
+            (staging / "packages").mkdir()
+            (outside / "same.yaml").write_text("same: true\n", encoding="utf-8")
+            (staging / "packages" / "same.yaml").write_text("same: true\n", encoding="utf-8")
+            (live / "packages").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(TransactionError, "compare staged candidate.*safely"):
+                build_apply_plan(
+                    staging,
+                    {"packages/same.yaml"},
+                    "d" * 40,
+                    live_dir=live,
+                )
+
+            self.assertEqual((outside / "same.yaml").read_text(), "same: true\n")
 
 
 if __name__ == "__main__":

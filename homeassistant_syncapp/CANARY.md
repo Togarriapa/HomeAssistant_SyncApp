@@ -65,7 +65,44 @@ The restart variant completes every backup proof **before** explicitly restartin
 
 Because these commands include `--filesystem`, they also require `live_configuration_invariance.path_set_unchanged: true` and `live_configuration_invariance.content_unchanged: true` after backup/restart. This automates the issue #4 requirement that canary activity must not alter policy-approved Home Assistant configuration. If another actor edits allowed configuration during the run, the proof also fails closed rather than incorrectly attributing a clean result.
 
-## 5. Full transaction canary
+## 5. Explicit downloaded-backup archive probe
+
+Only on the disposable canary, after the ordinary backup proof succeeds:
+
+```sh
+python3 /app/canary.py --filesystem --backup --backup-archive-probe
+```
+
+This is deliberately an **opt-in canary escalation**, not a production Backup → Apply prerequisite. The helper downloads the fresh canary backup through Supervisor `GET /backups/<slug>/download` into a newly created temporary file, with no-follow/exclusive creation and a hard streaming byte ceiling. The default ceiling is 1024 MiB and can be changed for a known larger canary backup, up to 8192 MiB:
+
+```sh
+python3 /app/canary.py --filesystem --backup --backup-archive-probe --backup-archive-max-mib 2048
+```
+
+The downloaded archive is never extracted into the filesystem. SyncApp only parses tar headers and streams the embedded Home Assistant component tar. Success requires:
+
+- the complete outer tar to be structurally readable;
+- exactly one non-empty `backup.json`;
+- exactly one non-empty `homeassistant.tar` or `homeassistant.tar.gz`;
+- the embedded Home Assistant tar to be structurally readable;
+- exactly one non-empty `homeassistant.json` inside that component archive;
+- at least one regular file under the component `data/` tree;
+- no absolute, traversal, backslash-based, or otherwise unsafe archive member paths;
+- the temporary downloaded tar to be removed when the probe finishes.
+
+The streaming client refuses to overwrite an existing destination, deletes a partial temporary file after download/size/HTTP failure, and fails rather than consuming unlimited temporary storage. The JSON evidence reports counts and proof booleans only; it does not expose configuration filenames, file contents, hashes, backup passwords, or extracted data.
+
+To combine archive validation with the restart test, use:
+
+```sh
+python3 /app/canary.py --filesystem --backup --backup-archive-probe --restart --timeout 120
+```
+
+Archive download and structural verification complete **before** Core restart. Any malformed/truncated outer tar or malformed Home Assistant component tar therefore blocks the optional restart. This check is useful evidence for issue #4 because successful Supervisor metadata alone does not prove that the actual downloadable artifact can be traversed as a backup archive.
+
+Do not automatically promote this archive read into the production remote-apply transaction until disposable-HAOS evidence establishes realistic download latency, temporary-storage consumption, and behavior for the intended backup sizes/storage locations. The production transaction continues to rely on the pinned local rollback snapshot plus Supervisor metadata/size continuity gates.
+
+## 6. Full transaction canary
 
 Only after all preceding levels pass should the disposable instance test an actual harmless remote commit through SyncApp's complete workflow:
 
@@ -73,4 +110,4 @@ Only after all preceding levels pass should the disposable instance test an actu
 
 Keep both `dry_run: true` and `remote_apply_enabled: false` while establishing the initial canary evidence. Enable live remote mutation only on the disposable instance and only for the issue #4 acceptance matrix.
 
-The canary helper is not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup probe proves Supervisor created the requested Home Assistant backup contents, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, or exact Git adoption.
+The canary helper is not a substitute for that full transaction exercise. The temporary-file write probe proves descriptor-relative replace/unlink/fsync support, the backup metadata probe proves Supervisor recorded the requested Home Assistant backup contents, the archive probe proves the fresh downloadable tar and embedded Home Assistant archive are structurally traversable, and the invariance proof shows the canary itself did not alter policy-approved live configuration. These still do not prove `/core/check` behavior after a recoverable remote update, transaction recovery after process/power interruption, restoreability on another machine, or exact Git adoption.

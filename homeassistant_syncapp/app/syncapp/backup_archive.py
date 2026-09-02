@@ -8,8 +8,6 @@ from typing import IO
 
 MAX_TAR_MEMBERS = 100_000
 MAX_METADATA_BYTES = 1024 * 1024
-MAX_OUTER_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
-MAX_OUTER_LOGICAL_BYTES = 16 * 1024 * 1024 * 1024
 MAX_HOMEASSISTANT_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
 MAX_HOMEASSISTANT_LOGICAL_BYTES = 8 * 1024 * 1024 * 1024
 _HOMEASSISTANT_ARCHIVES = {"homeassistant.tar", "homeassistant.tar.gz"}
@@ -40,26 +38,20 @@ def _count_member(count: int) -> int:
     return count
 
 
-def _bounded_regular_size(
-    total: int,
-    member: tarfile.TarInfo,
-    *,
-    label: str,
-    max_member_bytes: int,
-    max_total_bytes: int,
-) -> int:
-    """Bound declared uncompressed regular-file work before advancing a tar stream."""
+def _bounded_regular_size(total: int, member: tarfile.TarInfo) -> int:
+    """Bound declared uncompressed regular-file work before advancing the tar stream."""
     if not member.isfile():
         return total
-    if member.size < 0 or member.size > max_member_bytes:
+    if member.size < 0 or member.size > MAX_HOMEASSISTANT_MEMBER_BYTES:
         raise BackupArchiveError(
-            f"{label} contains a regular member exceeding the "
-            f"{max_member_bytes}-byte logical member limit"
+            "Home Assistant component archive contains a regular member exceeding the "
+            f"{MAX_HOMEASSISTANT_MEMBER_BYTES}-byte logical member limit"
         )
     total += member.size
-    if total > max_total_bytes:
+    if total > MAX_HOMEASSISTANT_LOGICAL_BYTES:
         raise BackupArchiveError(
-            f"{label} exceeds the {max_total_bytes}-byte logical payload limit"
+            "Home Assistant component archive exceeds the "
+            f"{MAX_HOMEASSISTANT_LOGICAL_BYTES}-byte logical payload limit"
         )
     return total
 
@@ -98,7 +90,6 @@ def verify_backup_archive(
 ) -> dict[str, object]:
     """Verify a downloaded Supervisor backup without extracting configuration data."""
     outer_count = 0
-    outer_logical_bytes = 0
     backup_json_members: list[tarfile.TarInfo] = []
     homeassistant_members: list[tarfile.TarInfo] = []
 
@@ -107,13 +98,6 @@ def verify_backup_archive(
             for member in outer:
                 outer_count = _count_member(outer_count)
                 name = _safe_member_name(member.name)
-                outer_logical_bytes = _bounded_regular_size(
-                    outer_logical_bytes,
-                    member,
-                    label="downloaded Supervisor backup archive",
-                    max_member_bytes=MAX_OUTER_MEMBER_BYTES,
-                    max_total_bytes=MAX_OUTER_LOGICAL_BYTES,
-                )
                 if name == "backup.json":
                     backup_json_members.append(member)
                 elif name in _HOMEASSISTANT_ARCHIVES:
@@ -176,11 +160,7 @@ def verify_backup_archive(
                         inner_count = _count_member(inner_count)
                         name = _safe_member_name(member.name)
                         inner_logical_bytes = _bounded_regular_size(
-                            inner_logical_bytes,
-                            member,
-                            label="Home Assistant component archive",
-                            max_member_bytes=MAX_HOMEASSISTANT_MEMBER_BYTES,
-                            max_total_bytes=MAX_HOMEASSISTANT_LOGICAL_BYTES,
+                            inner_logical_bytes, member
                         )
                         if name == "homeassistant.json":
                             homeassistant_json_members.append(member)
@@ -214,8 +194,6 @@ def verify_backup_archive(
     return {
         "outer_tar_readable": True,
         "outer_member_count": outer_count,
-        "outer_logical_bytes": outer_logical_bytes,
-        "outer_logical_size_bounded": True,
         "backup_metadata_present": True,
         "backup_identity_verified": expected_slug is not None and expected_name is not None,
         "partial_backup_verified": True,

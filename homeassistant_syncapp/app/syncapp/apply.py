@@ -18,6 +18,7 @@ from .transaction import (
     execute_verified_transaction,
     recover_active_transaction,
 )
+from .validated_plan import build_validated_apply_plan
 
 
 LOGGER = logging.getLogger(__name__)
@@ -117,13 +118,24 @@ def _execute_staged_apply(
             f"validated staging tree changed before apply planning: {exc}"
         ) from exc
 
-    desired_paths = collect_allowed_files(settings.staging_dir)
-    plan = build_apply_plan(
-        settings.staging_dir,
-        baseline_paths,
-        staged.commit,
-        live_dir=settings.source_dir,
-    )
+    if staged.integrity_bound:
+        validated_hashes = staged.file_hashes
+        desired_paths = set(validated_hashes)
+        plan = build_validated_apply_plan(
+            validated_hashes,
+            baseline_paths,
+            staged.commit,
+            live_dir=settings.source_dir,
+        )
+    else:
+        desired_paths = collect_allowed_files(settings.staging_dir)
+        plan = build_apply_plan(
+            settings.staging_dir,
+            baseline_paths,
+            staged.commit,
+            live_dir=settings.source_dir,
+        )
+
     try:
         deletion_result = enforce_remote_deletion_budget(
             plan.delete_paths,
@@ -161,6 +173,11 @@ def _execute_staged_apply(
         settings.staging_dir,
         plan,
     )
+    if staged.integrity_bound and transaction.plan.write_hashes != plan.write_hashes:
+        transaction.discard()
+        raise TransactionError(
+            "staged source bytes changed after validated planning and before transaction preparation"
+        )
 
     try:
         result = execute_verified_transaction(

@@ -8,10 +8,13 @@ from tempfile import TemporaryDirectory
 import time
 
 from syncapp.backup_archive import BackupArchiveError, verify_backup_archive
+from syncapp.live_fs import LiveFilesystem, LiveFilesystemError
+from syncapp.policy import collect_allowed_files
 from syncapp.supervisor import SupervisorClient, SupervisorError
 
 
 DEFAULT_DATA_ROOT = Path("/data")
+DEFAULT_LIVE_ROOT = Path("/homeassistant")
 DEFAULT_ARCHIVE_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_FREE_RESERVE_BYTES = 256 * 1024 * 1024
 
@@ -32,6 +35,25 @@ def _available_bytes(root: Path) -> int:
     return info.f_bavail * info.f_frsize
 
 
+def _allowed_live_hashes(root: Path) -> dict[str, str]:
+    if root.is_symlink():
+        raise CanaryStorageError("live configuration root must not be a symlink")
+    if not root.is_dir():
+        raise CanaryStorageError("live configuration root is not an existing directory")
+    paths = sorted(collect_allowed_files(root))
+    if not paths:
+        raise CanaryStorageError(
+            "archive fidelity canary requires at least one policy-approved live file"
+        )
+    filesystem = LiveFilesystem(root)
+    try:
+        return {relative: filesystem.sha256(relative) for relative in paths}
+    except LiveFilesystemError as exc:
+        raise CanaryStorageError(
+            f"cannot establish stable policy-approved live-file baseline: {exc}"
+        ) from exc
+
+
 def _elapsed(clock: Callable[[], float], started: float) -> float:
     elapsed = clock() - started
     if elapsed < 0:
@@ -43,11 +65,12 @@ def run_backup_storage_probe(
     client: SupervisorClient,
     *,
     data_root: Path = DEFAULT_DATA_ROOT,
+    live_root: Path = DEFAULT_LIVE_ROOT,
     max_bytes: int = DEFAULT_ARCHIVE_MAX_BYTES,
     reserve_bytes: int = DEFAULT_FREE_RESERVE_BYTES,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
-    """Measure a fresh verified backup download without risking data-root exhaustion.
+    """Measure and byte-verify a fresh backup without risking data-root exhaustion.
 
     This is canary-only evidence. It intentionally does not change the production
     Backup -> Apply contract.
@@ -56,6 +79,8 @@ def run_backup_storage_probe(
         raise CanaryStorageError("archive byte ceiling must be positive")
     if reserve_bytes <= 0:
         raise CanaryStorageError("free-space reserve must be positive")
+
+    live_hashes_before = _allowed_live_hashes(live_root)
 
     required_free = max_bytes + reserve_bytes
     initial_available = _available_bytes(data_root)
@@ -129,10 +154,17 @@ def run_backup_storage_probe(
                 expected_slug=slug,
                 expected_name=backup_name,
                 expected_homeassistant_version=homeassistant_version,
+                expected_data_sha256=live_hashes_before,
             )
         except BackupArchiveError as exc:
             raise CanaryStorageError(f"downloaded backup archive canary failed: {exc}") from exc
         archive_verify_seconds = _elapsed(clock, started)
+
+    live_hashes_after = _allowed_live_hashes(live_root)
+    if live_hashes_after != live_hashes_before:
+        raise CanaryStorageError(
+            "policy-approved live configuration changed during backup fidelity measurement"
+        )
 
     after_cleanup = _available_bytes(data_root)
     if after_cleanup < reserve_bytes:
@@ -146,6 +178,7 @@ def run_backup_storage_probe(
             "download_verified": True,
             "downloaded_bytes": downloaded_bytes,
             **archive_evidence,
+            "live_file_set_stable": True,
             "temporary_download_removed": True,
         },
         "storage": {

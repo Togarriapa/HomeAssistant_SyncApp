@@ -114,6 +114,8 @@ class CanaryStorageTests(unittest.TestCase):
             self.assertEqual(storage["data_root"], str(root))  # type: ignore[index]
             self.assertEqual(storage["archive_max_bytes"], 1024 * 1024)  # type: ignore[index]
             self.assertEqual(storage["free_reserve_bytes"], 1024 * 1024)  # type: ignore[index]
+            self.assertTrue(storage["reserve_preserved_after_download"])  # type: ignore[index]
+            self.assertTrue(storage["reserve_preserved_after_cleanup"])  # type: ignore[index]
 
     def test_initial_free_space_gate_blocks_before_backup_creation(self):
         client = StorageCanaryClient()
@@ -142,6 +144,44 @@ class CanaryStorageTests(unittest.TestCase):
                     reserve_bytes=100,
                 )
         self.assertEqual(client.calls, ["backup", "verify"])
+
+    def test_concurrent_storage_pressure_after_download_aborts_before_archive_parse(self):
+        client = StorageCanaryClient()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch(
+                "syncapp.canary_storage._available_bytes",
+                side_effect=[1000, 500, 50],
+            ), mock.patch(
+                "syncapp.canary_storage.verify_backup_archive"
+            ) as verify_archive:
+                with self.assertRaisesRegex(CanaryStorageError, "below the protected reserve"):
+                    run_backup_storage_probe(  # type: ignore[arg-type]
+                        client,
+                        data_root=root,
+                        max_bytes=100,
+                        reserve_bytes=100,
+                    )
+            verify_archive.assert_not_called()
+            self.assertEqual(client.calls, ["backup", "verify", "download"])
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_storage_below_reserve_after_cleanup_is_reported_as_failure(self):
+        client = StorageCanaryClient()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch(
+                "syncapp.canary_storage._available_bytes",
+                side_effect=[1000, 500, 400, 50],
+            ):
+                with self.assertRaisesRegex(CanaryStorageError, "cleanup completed.*below"):
+                    run_backup_storage_probe(  # type: ignore[arg-type]
+                        client,
+                        data_root=root,
+                        max_bytes=100,
+                        reserve_bytes=100,
+                    )
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_symlink_data_root_is_rejected(self):
         client = StorageCanaryClient()

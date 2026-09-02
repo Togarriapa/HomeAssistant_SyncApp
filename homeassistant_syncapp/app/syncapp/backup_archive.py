@@ -104,10 +104,18 @@ def verify_backup_archive(
                 raise BackupArchiveError(
                     "downloaded backup.json name does not match the fresh canary backup"
                 )
+            if backup_metadata.get("type") != "partial":
+                raise BackupArchiveError(
+                    "downloaded backup.json does not describe the requested partial backup"
+                )
             homeassistant_metadata = backup_metadata.get("homeassistant")
             if not isinstance(homeassistant_metadata, dict):
                 raise BackupArchiveError(
                     "downloaded backup.json does not describe Home Assistant content"
+                )
+            if homeassistant_metadata.get("exclude_database") is not True:
+                raise BackupArchiveError(
+                    "downloaded backup.json does not confirm Home Assistant database exclusion"
                 )
             if expected_homeassistant_version is not None:
                 if homeassistant_metadata.get("version") != expected_homeassistant_version:
@@ -161,6 +169,8 @@ def verify_backup_archive(
         "outer_member_count": outer_count,
         "backup_metadata_present": True,
         "backup_identity_verified": expected_slug is not None and expected_name is not None,
+        "partial_backup_verified": True,
+        "homeassistant_database_excluded": True,
         "homeassistant_archive_present": True,
         "homeassistant_archive_readable": True,
         "homeassistant_member_count": inner_count,

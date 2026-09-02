@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path, PurePosixPath
 import tarfile
+from typing import BinaryIO
 
 
 MAX_TAR_MEMBERS = 100_000
+MAX_METADATA_BYTES = 1024 * 1024
 _HOMEASSISTANT_ARCHIVES = {"homeassistant.tar", "homeassistant.tar.gz"}
 
 
@@ -30,10 +33,41 @@ def _count_member(count: int) -> int:
     return count
 
 
-def verify_backup_archive(path: Path) -> dict[str, object]:
+def _read_metadata_json(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    label: str,
+) -> dict[str, object]:
+    if not member.isfile() or not 0 < member.size <= MAX_METADATA_BYTES:
+        raise BackupArchiveError(
+            f"{label} is not a non-empty regular member within the metadata size limit"
+        )
+    stream: BinaryIO | None = archive.extractfile(member)
+    if stream is None:
+        raise BackupArchiveError(f"cannot read {label}")
+    with stream:
+        raw = stream.read(MAX_METADATA_BYTES + 1)
+    if len(raw) != member.size or len(raw) > MAX_METADATA_BYTES:
+        raise BackupArchiveError(f"{label} metadata size is inconsistent or excessive")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupArchiveError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(data, dict):
+        raise BackupArchiveError(f"{label} JSON is not an object")
+    return data
+
+
+def verify_backup_archive(
+    path: Path,
+    *,
+    expected_slug: str | None = None,
+    expected_name: str | None = None,
+    expected_homeassistant_version: str | None = None,
+) -> dict[str, object]:
     """Verify a downloaded Supervisor backup without extracting configuration data."""
     outer_count = 0
-    backup_json_count = 0
+    backup_json_members: list[tarfile.TarInfo] = []
     homeassistant_members: list[tarfile.TarInfo] = []
 
     try:
@@ -42,11 +76,7 @@ def verify_backup_archive(path: Path) -> dict[str, object]:
                 outer_count = _count_member(outer_count)
                 name = _safe_member_name(member.name)
                 if name == "backup.json":
-                    if not member.isfile() or member.size <= 0:
-                        raise BackupArchiveError(
-                            "backup.json is not a non-empty regular archive member"
-                        )
-                    backup_json_count += 1
+                    backup_json_members.append(member)
                 elif name in _HOMEASSISTANT_ARCHIVES:
                     if not member.isfile() or member.size <= 0:
                         raise BackupArchiveError(
@@ -54,7 +84,7 @@ def verify_backup_archive(path: Path) -> dict[str, object]:
                         )
                     homeassistant_members.append(member)
 
-            if backup_json_count != 1:
+            if len(backup_json_members) != 1:
                 raise BackupArchiveError(
                     "downloaded backup does not contain exactly one backup.json"
                 )
@@ -63,12 +93,34 @@ def verify_backup_archive(path: Path) -> dict[str, object]:
                     "downloaded backup does not contain exactly one Home Assistant archive"
                 )
 
+            backup_metadata = _read_metadata_json(
+                outer, backup_json_members[0], "backup.json"
+            )
+            if expected_slug is not None and backup_metadata.get("slug") != expected_slug:
+                raise BackupArchiveError(
+                    "downloaded backup.json slug does not match the fresh canary backup"
+                )
+            if expected_name is not None and backup_metadata.get("name") != expected_name:
+                raise BackupArchiveError(
+                    "downloaded backup.json name does not match the fresh canary backup"
+                )
+            homeassistant_metadata = backup_metadata.get("homeassistant")
+            if not isinstance(homeassistant_metadata, dict):
+                raise BackupArchiveError(
+                    "downloaded backup.json does not describe Home Assistant content"
+                )
+            if expected_homeassistant_version is not None:
+                if homeassistant_metadata.get("version") != expected_homeassistant_version:
+                    raise BackupArchiveError(
+                        "downloaded backup.json Home Assistant version does not match API evidence"
+                    )
+
             inner_stream = outer.extractfile(homeassistant_members[0])
             if inner_stream is None:
                 raise BackupArchiveError("cannot read the Home Assistant backup archive member")
 
             inner_count = 0
-            homeassistant_json_count = 0
+            homeassistant_json_members: list[tarfile.TarInfo] = []
             data_file_count = 0
             try:
                 with inner_stream, tarfile.open(fileobj=inner_stream, mode="r:*") as inner:
@@ -76,22 +128,25 @@ def verify_backup_archive(path: Path) -> dict[str, object]:
                         inner_count = _count_member(inner_count)
                         name = _safe_member_name(member.name)
                         if name == "homeassistant.json":
-                            if not member.isfile() or member.size <= 0:
-                                raise BackupArchiveError(
-                                    "homeassistant.json is not a non-empty regular archive member"
-                                )
-                            homeassistant_json_count += 1
+                            homeassistant_json_members.append(member)
                         elif name.startswith("data/") and member.isfile():
                             data_file_count += 1
+                    if len(homeassistant_json_members) != 1:
+                        raise BackupArchiveError(
+                            "Home Assistant component archive does not contain exactly one homeassistant.json"
+                        )
+                    _read_metadata_json(
+                        inner,
+                        homeassistant_json_members[0],
+                        "homeassistant.json",
+                    )
+            except BackupArchiveError:
+                raise
             except tarfile.TarError as exc:
                 raise BackupArchiveError(
                     "Home Assistant component archive is not structurally readable"
                 ) from exc
 
-            if homeassistant_json_count != 1:
-                raise BackupArchiveError(
-                    "Home Assistant component archive does not contain exactly one homeassistant.json"
-                )
             if data_file_count < 1:
                 raise BackupArchiveError(
                     "Home Assistant component archive does not contain configuration data files"
@@ -105,9 +160,11 @@ def verify_backup_archive(path: Path) -> dict[str, object]:
         "outer_tar_readable": True,
         "outer_member_count": outer_count,
         "backup_metadata_present": True,
+        "backup_identity_verified": expected_slug is not None and expected_name is not None,
         "homeassistant_archive_present": True,
         "homeassistant_archive_readable": True,
         "homeassistant_member_count": inner_count,
         "homeassistant_metadata_present": True,
+        "homeassistant_version_matches_api": expected_homeassistant_version is not None,
         "homeassistant_data_files": data_file_count,
     }

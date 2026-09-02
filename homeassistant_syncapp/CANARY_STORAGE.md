@@ -42,14 +42,16 @@ If capacity is insufficient, reduce the ceiling only when the already-verified b
 
 ## Archive parser resource bounds
 
-The transport byte ceiling is not the only resource boundary. A small compressed tar can describe a much larger logical/uncompressed payload, so archive validation also applies explicit limits **before advancing past each inner regular-file header**:
+The transport byte ceiling is not the only resource boundary. A small compressed tar can describe a much larger logical/uncompressed payload, so archive validation applies explicit declared-size limits before advancing past regular-file headers at **both** archive layers:
 
-- maximum declared logical size of one Home Assistant archive regular file: 2 GiB;
-- maximum cumulative declared logical size of regular files in the Home Assistant component archive: 8 GiB;
+- outer Supervisor archive: maximum 8 GiB for one regular member and 16 GiB cumulative regular-file logical payload;
+- nested Home Assistant component archive: maximum 2 GiB for one regular member and 8 GiB cumulative regular-file logical payload;
 - maximum tar members remains 100,000 per outer/inner archive;
 - JSON metadata remains capped at 1 MiB.
 
 These bounds are canary parser protections, not claims about normal Home Assistant backup size. The verifier does not extract configuration files. It rejects oversized declared regular members immediately so a compressed or malformed archive cannot turn the diagnostic structural check into effectively unbounded decompression work. A normalized tar member path that collapses to an empty path is also rejected.
+
+The outer limits are intentionally wider than the nested Home Assistant limits because the Supervisor container can carry component metadata or other material in addition to the Home Assistant payload. They are still finite so compression auto-detection at the outer layer cannot bypass the resource model.
 
 If a legitimate disposable-HAOS backup exceeds these logical limits, record that fact in issue #4 before changing them. Do not silently raise the limits merely to make the canary pass; the real backup shape and operational cost are precisely what this canary is intended to characterize.
 
@@ -62,7 +64,7 @@ It then downloads the exact fresh slug to a random temporary directory under `/d
 Successful JSON records:
 
 - production backup verification evidence;
-- archive structural/identity evidence, including bounded Home Assistant logical bytes;
+- archive structural/identity evidence, including bounded outer and Home Assistant logical bytes;
 - configured maximum download and reserve;
 - `/data` available bytes initially, immediately before download, after download, and after cleanup;
 - signed available-space deltas during download and after cleanup;
@@ -80,7 +82,7 @@ Keep the JSON together with:
 - the storage location/configuration used by the disposable HAOS instance;
 - whether the backup backend is local or otherwise configured;
 - the backup size reported by Supervisor;
-- the reported Home Assistant logical bytes from archive validation.
+- the reported outer and Home Assistant logical bytes from archive validation.
 
 Run the probe more than once if practical. Production-gating decisions should use observed worst-case/representative backup creation and download/verification latency, not a single unusually fast run.
 

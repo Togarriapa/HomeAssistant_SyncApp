@@ -67,6 +67,7 @@ class FakeCanaryClient:
                 "date": "2026-09-01T22:00:00+00:00",
                 "protected": False,
                 "type": "partial",
+                "size": 1.25,
                 "content": {"homeassistant": True, "addons": [], "folders": []},
             }
         ]
@@ -79,6 +80,7 @@ class FakeCanaryClient:
             "slug": slug,
             "name": self.backup_name,
             "type": "partial",
+            "size": "1.25",
             "homeassistant": "2026.9.0",
             "homeassistant_exclude_database": True,
         }
@@ -128,7 +130,7 @@ class CanaryTests(unittest.TestCase):
         self.assertNotIn("post_restart_core_api", result)
         self.assertNotIn("filesystem", result)
 
-    def test_backup_is_inventory_and_detail_verified_before_optional_restart(self):
+    def test_backup_is_production_verified_before_optional_restart(self):
         client = FakeCanaryClient()
         result = run_canary(  # type: ignore[arg-type]
             client,
@@ -157,6 +159,8 @@ class CanaryTests(unittest.TestCase):
         self.assertTrue(backup["detail_verified"])  # type: ignore[index]
         self.assertTrue(backup["homeassistant_content_verified"])  # type: ignore[index]
         self.assertTrue(backup["homeassistant_database_excluded"])  # type: ignore[index]
+        self.assertTrue(backup["backup_size_verified"])  # type: ignore[index]
+        self.assertEqual(backup["backup_size_mb"], "1.25")  # type: ignore[index]
         self.assertEqual(backup["homeassistant_version"], "2026.9.0")  # type: ignore[index]
         self.assertEqual(result["post_restart_core_api"], {"message": "API running."})
 
@@ -174,6 +178,7 @@ class CanaryTests(unittest.TestCase):
                 "slug": "backup-slug",
                 "name": "Unexpected backup",
                 "type": "partial",
+                "size": 1.25,
                 "content": {"homeassistant": True},
             }
         ]
@@ -182,6 +187,7 @@ class CanaryTests(unittest.TestCase):
 
     def test_backup_canary_fails_if_inventory_type_is_not_partial(self):
         client = FakeCanaryClient()
+
         def inventory_with_requested_name() -> list[dict]:
             client.calls.append("backup-inventory")
             return [
@@ -189,9 +195,11 @@ class CanaryTests(unittest.TestCase):
                     "slug": "backup-slug",
                     "name": client.backup_name,
                     "type": "full",
+                    "size": 1.25,
                     "content": {"homeassistant": True},
                 }
             ]
+
         client.list_backups = inventory_with_requested_name  # type: ignore[method-assign]
         with self.assertRaisesRegex(RuntimeError, "was not the requested partial backup"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
@@ -204,6 +212,30 @@ class CanaryTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(RuntimeError, "did not contain exactly one entry"):
             run_canary(client, create_backup=True)  # type: ignore[arg-type]
+
+    def test_backup_canary_rejects_zero_size_using_production_contract(self):
+        client = FakeCanaryClient()
+        client.backups = [
+            {
+                "slug": "backup-slug",
+                "name": None,
+                "type": "partial",
+                "size": 0,
+                "content": {"homeassistant": True},
+            }
+        ]
+
+        def create(name: str) -> str:
+            client.calls.append("backup")
+            client.backup_name = name
+            client.backups[0]["name"] = name
+            return "backup-slug"
+
+        client.create_homeassistant_backup = create  # type: ignore[method-assign]
+        with self.assertRaisesRegex(RuntimeError, "non-zero size"):
+            run_canary(client, create_backup=True, restart=True)  # type: ignore[arg-type]
+        self.assertNotIn("backup-info", client.calls)
+        self.assertNotIn("restart", client.calls)
 
     def test_readonly_filesystem_probe_does_not_create_files(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -290,16 +322,22 @@ class CanaryTests(unittest.TestCase):
             live.mkdir()
             (live / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
             real_replace = __import__("os").replace
+
             def fail_canary_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
                 if str(src).startswith(".syncapp-canary-"):
                     raise OSError("injected replace failure")
                 return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
             with mock.patch("canary.secrets.token_hex", return_value="fixed"), mock.patch(
                 "canary.os.replace", side_effect=fail_canary_replace
             ):
                 with self.assertRaisesRegex(OSError, "injected replace failure"):
                     run_filesystem_canary(live, write_probe=True)
-            leftovers = [path.name for path in live.iterdir() if path.name.startswith(".syncapp-canary-")]
+            leftovers = [
+                path.name
+                for path in live.iterdir()
+                if path.name.startswith(".syncapp-canary-")
+            ]
             self.assertEqual(leftovers, [])
 
     def test_filesystem_probe_rejects_symlink_root(self):

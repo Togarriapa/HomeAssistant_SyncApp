@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path, PurePosixPath
 import tarfile
-from typing import BinaryIO
+from typing import IO
 
 
 MAX_TAR_MEMBERS = 100_000
@@ -42,7 +42,7 @@ def _read_metadata_json(
         raise BackupArchiveError(
             f"{label} is not a non-empty regular member within the metadata size limit"
         )
-    stream: BinaryIO | None = archive.extractfile(member)
+    stream: IO[bytes] | None = archive.extractfile(member)
     if stream is None:
         raise BackupArchiveError(f"cannot read {label}")
     with stream:

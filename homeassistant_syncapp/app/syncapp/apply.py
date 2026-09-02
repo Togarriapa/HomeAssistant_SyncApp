@@ -9,7 +9,7 @@ from .drift import detect_live_drift
 from .git_repo import GitRepository
 from .mirror import save_manifest
 from .policy import collect_allowed_files, is_allowed_relative
-from .staging import StagingResult
+from .staging import StagingResult, StagingValidationError, assert_staging_integrity
 from .supervisor import SupervisorClient
 from .transaction import (
     FileTransaction,
@@ -110,6 +110,13 @@ def _execute_staged_apply(
     *,
     verify_noop: bool = False,
 ) -> tuple[str, ...]:
+    try:
+        assert_staging_integrity(settings.staging_dir, staged)
+    except StagingValidationError as exc:
+        raise TransactionError(
+            f"validated staging tree changed before apply planning: {exc}"
+        ) from exc
+
     desired_paths = collect_allowed_files(settings.staging_dir)
     plan = build_apply_plan(
         settings.staging_dir,

@@ -36,6 +36,7 @@ class InvarianceCanaryClient:
                 "slug": "backup-slug",
                 "name": self.backup_name,
                 "type": "partial",
+                "size": 1.5,
                 "content": {"homeassistant": True, "addons": [], "folders": []},
             }
         ]
@@ -45,6 +46,7 @@ class InvarianceCanaryClient:
             "slug": slug,
             "name": self.backup_name,
             "type": "partial",
+            "size": "1.5",
             "homeassistant": "2026.9.0",
             "homeassistant_exclude_database": True,
         }

@@ -8,6 +8,8 @@ from typing import IO
 
 MAX_TAR_MEMBERS = 100_000
 MAX_METADATA_BYTES = 1024 * 1024
+MAX_HOMEASSISTANT_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
+MAX_HOMEASSISTANT_LOGICAL_BYTES = 8 * 1024 * 1024 * 1024
 _HOMEASSISTANT_ARCHIVES = {"homeassistant.tar", "homeassistant.tar.gz"}
 
 
@@ -21,7 +23,10 @@ def _safe_member_name(name: str) -> str:
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts:
         raise BackupArchiveError("backup archive contains an unsafe member path")
-    return "/".join(part for part in path.parts if part not in {"", "."})
+    normalized = "/".join(part for part in path.parts if part not in {"", "."})
+    if not normalized:
+        raise BackupArchiveError("backup archive contains an empty normalized member path")
+    return normalized
 
 
 def _count_member(count: int) -> int:
@@ -31,6 +36,24 @@ def _count_member(count: int) -> int:
             f"backup archive exceeds the {MAX_TAR_MEMBERS} member safety limit"
         )
     return count
+
+
+def _bounded_regular_size(total: int, member: tarfile.TarInfo) -> int:
+    """Bound declared uncompressed regular-file work before advancing the tar stream."""
+    if not member.isfile():
+        return total
+    if member.size < 0 or member.size > MAX_HOMEASSISTANT_MEMBER_BYTES:
+        raise BackupArchiveError(
+            "Home Assistant component archive contains a regular member exceeding the "
+            f"{MAX_HOMEASSISTANT_MEMBER_BYTES}-byte logical member limit"
+        )
+    total += member.size
+    if total > MAX_HOMEASSISTANT_LOGICAL_BYTES:
+        raise BackupArchiveError(
+            "Home Assistant component archive exceeds the "
+            f"{MAX_HOMEASSISTANT_LOGICAL_BYTES}-byte logical payload limit"
+        )
+    return total
 
 
 def _read_metadata_json(
@@ -128,6 +151,7 @@ def verify_backup_archive(
                 raise BackupArchiveError("cannot read the Home Assistant backup archive member")
 
             inner_count = 0
+            inner_logical_bytes = 0
             homeassistant_json_members: list[tarfile.TarInfo] = []
             data_file_count = 0
             try:
@@ -135,6 +159,9 @@ def verify_backup_archive(
                     for member in inner:
                         inner_count = _count_member(inner_count)
                         name = _safe_member_name(member.name)
+                        inner_logical_bytes = _bounded_regular_size(
+                            inner_logical_bytes, member
+                        )
                         if name == "homeassistant.json":
                             homeassistant_json_members.append(member)
                         elif name.startswith("data/") and member.isfile():
@@ -174,6 +201,8 @@ def verify_backup_archive(
         "homeassistant_archive_present": True,
         "homeassistant_archive_readable": True,
         "homeassistant_member_count": inner_count,
+        "homeassistant_logical_bytes": inner_logical_bytes,
+        "homeassistant_logical_size_bounded": True,
         "homeassistant_metadata_present": True,
         "homeassistant_version_matches_api": expected_homeassistant_version is not None,
         "homeassistant_data_files": data_file_count,

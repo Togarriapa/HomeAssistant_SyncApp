@@ -16,12 +16,18 @@ The resulting `StagingResult` records the complete path/hash set, file count, to
 
 Immediately before remote apply planning, SyncApp re-runs static directory validation and requires the complete path/hash/count/size result to match the validated staging result. Failure happens before deletion budgeting, no-op adoption, Supervisor backup creation, transaction creation, Git adoption, managed-manifest persistence, or `/homeassistant` mutation.
 
-This closes two related substitution windows: different bytes cannot be substituted between fetched Git blob materialization and static validation, and a valid staged file cannot later be replaced by different-but-still-valid YAML/JSON/Python after validation. Re-running only syntax validation would not detect either same-size valid substitution; the cryptographic manifests do.
+## Apply-plan semantics are bound to validated evidence
 
-For mutating candidates, this is only the first continuity layer. `FileTransaction.prepare()` independently pins the staged write bytes again, and the transaction rechecks those hashes after the Supervisor backup window immediately before live mutation. The continuity chain is therefore:
+After that revalidation, SyncApp does **not** rediscover remote intent by walking the mutable staging directory again. For integrity-bound remote candidates, the validated `StagingResult` path/hash manifest is the authority for the desired path set, live/hash comparisons, and deletion decisions. A managed path becomes a delete only when it is absent from the validated remote manifest—not because a staged pathname later disappeared, became a symlink, or was otherwise damaged.
 
-**Fetch exact Git blob bytes → hash → descriptor-confined Stage → static Validate + hash → require Git/staging hash equality → pre-apply static/hash revalidation → transaction hash pin → Backup → pre-Apply hash recheck → Apply → Verify → Rollback if necessary**
+This distinction prevents a post-validation staging race from turning a validated remote file into an unintended live deletion. If live already equals a validated desired hash, a later loss of the staged copy cannot manufacture a deletion and the update may remain a true no-op. If live needs a write, the staged source must still exist and `FileTransaction.prepare()` must pin exactly the validated hash before any Supervisor Backup is requested. A different same-size source causes the prepared local transaction evidence to be discarded before Backup or live mutation.
+
+This closes several related substitution windows: different bytes cannot be substituted between fetched Git blob materialization and static validation; a valid staged file cannot later be replaced by different-but-still-valid YAML/JSON/Python after validation; and staging damage after the integrity check cannot alter the validated desired/deletion semantics. Re-running only syntax validation would not provide these guarantees.
+
+For mutating candidates, transaction pinning remains another independent continuity layer. The transaction rechecks its pinned staged hashes after the Supervisor backup window immediately before live mutation. The continuity chain is therefore:
+
+**Fetch exact Git blob bytes → hash → descriptor-confined Stage → static Validate + hash → require Git/staging hash equality → pre-apply static/hash revalidation → build desired/deletion plan from validated manifest → transaction hash pin must equal validated hash → Backup → pre-Apply hash recheck → Apply → Verify → Rollback if necessary**
 
 The normal synchronization policy remains unchanged. `secrets.yaml`, `.storage`, databases, logs, keys/certificates, temporary files, and other blocked runtime paths never become part of the staged validation manifest.
 
-This mechanism does not make the staging directory trusted storage. It deliberately treats staging as mutable evidence and re-proves it at each transition that matters. It also does not introduce any Git checkout or pull into `/homeassistant`.
+This mechanism does not make the staging directory trusted storage. It deliberately treats staging as mutable evidence and uses immutable validation evidence for decisions whenever possible. It also does not introduce any Git checkout or pull into `/homeassistant`.

@@ -145,13 +145,9 @@ def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
         return
     validated = validate_configuration_directory(root)
     if validated.file_count != staged.file_count:
-        raise StagingValidationError(
-            "staging file count changed after validation"
-        )
+        raise StagingValidationError("staging file count changed after validation")
     if validated.total_bytes != staged.total_bytes:
-        raise StagingValidationError(
-            "staging total byte count changed after validation"
-        )
+        raise StagingValidationError("staging total byte count changed after validation")
     if validated.file_sha256 != staged.file_sha256:
         raise StagingValidationError(
             "staging path/content hash manifest changed after validation"
@@ -187,6 +183,7 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
         shutil.rmtree(temporary)
     temporary.mkdir(parents=True, exist_ok=False)
 
+    git_hashes: list[tuple[str, str]] = []
     try:
         for entry, expected_size in planned:
             destination = temporary / entry.path
@@ -196,12 +193,18 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
                 raise StagingValidationError(
                     f"blob size changed while staging {entry.path!r}"
                 )
+            git_hashes.append((entry.path, hashlib.sha256(content).hexdigest()))
             destination.write_bytes(content)
 
         validated = validate_configuration_directory(temporary)
+        expected_hashes = tuple(sorted(git_hashes))
         if validated.file_count != len(planned) or validated.total_bytes != total_bytes:
             raise StagingValidationError(
                 "materialized staging tree does not match validated Git tree"
+            )
+        if validated.file_sha256 != expected_hashes:
+            raise StagingValidationError(
+                "materialized staging bytes do not match the fetched Git blobs"
             )
 
         if staging_dir.exists():

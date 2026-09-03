@@ -283,4 +283,96 @@ class PinnedReadRoot:
                 os.close(fd)
 
     def sha256(self, relative: str) -> str:
-        return hashlib.sha256(self.read_bytes(relative)).hexdigest()
+        root_fd, _ = self._require_open()
+        parts = _relative_parts(relative)
+        directory_flags = (
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        opened_dirs: list[int] = []
+        parent_chain: list[tuple[int, str, os.stat_result]] = []
+        parent_fd = root_fd
+        try:
+            for name in parts[:-1]:
+                child_fd: int | None = None
+                try:
+                    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+                    opened = os.fstat(child_fd)
+                except OSError as exc:
+                    if child_fd is not None:
+                        os.close(child_fd)
+                    raise ReadEvidenceError(
+                        f"cannot open {self.label} parent {name} safely: {exc}"
+                    ) from exc
+                if (
+                    not stat.S_ISDIR(entry.st_mode)
+                    or not stat.S_ISDIR(opened.st_mode)
+                    or (entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino)
+                ):
+                    os.close(child_fd)
+                    raise ReadEvidenceError(
+                        f"{self.label} parent {name} was replaced while being opened"
+                    )
+                parent_chain.append((parent_fd, name, opened))
+                opened_dirs.append(child_fd)
+                parent_fd = child_fd
+
+            leaf = parts[-1]
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                entry = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                fd = os.open(leaf, flags, dir_fd=parent_fd)
+            except OSError as exc:
+                raise ReadEvidenceError(
+                    f"cannot open {self.label} file {relative} safely: {exc}"
+                ) from exc
+            try:
+                before = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(entry.st_mode)
+                    or not stat.S_ISREG(before.st_mode)
+                    or (entry.st_dev, entry.st_ino) != (before.st_dev, before.st_ino)
+                ):
+                    raise ReadEvidenceError(
+                        f"{self.label} file {relative} changed type or identity while being opened"
+                    )
+
+                digest = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = os.read(fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    total += len(chunk)
+
+                after = os.fstat(fd)
+                if _stable_identity(before) != _stable_identity(after) or total != after.st_size:
+                    raise ReadEvidenceError(f"{self.label} file {relative} changed while being read")
+                current_leaf = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(current_leaf.st_mode)
+                    or _stable_identity(current_leaf) != _stable_identity(after)
+                ):
+                    raise ReadEvidenceError(
+                        f"{self.label} file {relative} was replaced while being read"
+                    )
+            finally:
+                os.close(fd)
+
+            for ancestor_fd, name, expected in reversed(parent_chain):
+                current = os.stat(name, dir_fd=ancestor_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(current.st_mode)
+                    or _stable_identity(current) != _stable_identity(expected)
+                ):
+                    raise ReadEvidenceError(
+                        f"{self.label} parent {name} was replaced while evidence was being read"
+                    )
+            self.assert_path_identity()
+            return digest.hexdigest()
+        except OSError as exc:
+            raise ReadEvidenceError(f"cannot revalidate {self.label} safely: {exc}") from exc
+        finally:
+            for fd in reversed(opened_dirs):
+                os.close(fd)

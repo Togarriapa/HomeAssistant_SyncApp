@@ -173,6 +173,7 @@ def _execute_staged_apply(
         settings.source_dir,
         settings.staging_dir,
         plan,
+        staging_root_identity=staged.root_identity,
     )
     if staged.integrity_bound and transaction.plan.write_hashes != plan.write_hashes:
         transaction.discard()
@@ -230,11 +231,6 @@ def _execute_staged_apply(
             f"verified remote apply could not adopt Git baseline and was rolled back safely: {exc}"
         ) from exc
 
-    # From this point onward Git has adopted the exact commit that already passed
-    # Core verification and the live files match it. Rolling the files back while
-    # leaving Git adopted would create a split-brain baseline. Preserve the verified
-    # journal instead; recover_interrupted_apply() can prove Git/live agreement and
-    # retry only the remaining bookkeeping on the next cycle.
     try:
         save_manifest(settings.manifest_path, desired_paths)
         transaction.complete()

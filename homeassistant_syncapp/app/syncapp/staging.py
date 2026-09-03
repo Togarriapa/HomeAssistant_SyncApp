@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 
 import yaml
 
@@ -48,6 +49,7 @@ class StagingResult:
     total_bytes: int
     file_sha256: tuple[tuple[str, str], ...] = ()
     integrity_bound: bool = False
+    root_identity: tuple[int, int] | None = None
 
     @property
     def file_hashes(self) -> dict[str, str]:
@@ -107,6 +109,19 @@ def _validate_file_bytes(relative: str, raw: bytes) -> None:
             raise StagingValidationError(f"invalid Python syntax in {relative}: {exc}") from exc
 
 
+def _assert_root_identity(root: Path, expected: tuple[int, int]) -> None:
+    try:
+        info = os.stat(root, follow_symlinks=False)
+    except OSError as exc:
+        raise StagingValidationError(
+            f"staging root pathname no longer identifies the validated tree: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != expected:
+        raise StagingValidationError(
+            "staging root pathname was replaced after validation"
+        )
+
+
 def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
     """Validate and hash exactly the policy-allowed bytes in a materialized tree."""
     files = sorted(collect_allowed_files(root))
@@ -142,10 +157,14 @@ def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
 
 
 def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
-    """Re-prove that the staging tree still equals the exact bytes that passed validation."""
+    """Re-prove that staging still names the exact tree and bytes that passed validation."""
     if not staged.integrity_bound:
         return
+    if staged.root_identity is not None:
+        _assert_root_identity(root, staged.root_identity)
     validated = validate_configuration_directory(root)
+    if staged.root_identity is not None:
+        _assert_root_identity(root, staged.root_identity)
     if validated.file_count != staged.file_count:
         raise StagingValidationError("staging file count changed after validation")
     if validated.total_bytes != staged.total_bytes:
@@ -194,6 +213,7 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
 
     git_hashes: list[tuple[str, str]] = []
     installed = False
+    root_identity: tuple[int, int] | None = None
     try:
         with StagingFilesystem(temporary) as staging_fs:
             for entry, expected_size in planned:
@@ -224,6 +244,7 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
             temporary.rename(staging_dir)
             installed = True
             staging_fs.assert_path_identity(staging_dir)
+            root_identity = staging_fs.root_identity()
     except StagingFilesystemError as exc:
         # A confinement failure means a pathname may no longer name the tree that
         # SyncApp actually opened. Preserve that evidence rather than recursively
@@ -240,4 +261,5 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
         total_bytes=total_bytes,
         file_sha256=validated.file_sha256,
         integrity_bound=True,
+        root_identity=root_identity,
     )

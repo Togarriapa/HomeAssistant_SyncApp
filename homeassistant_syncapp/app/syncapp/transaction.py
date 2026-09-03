@@ -134,11 +134,20 @@ class FileTransaction:
     JOURNAL = "journal.json"
     SNAPSHOT = "snapshot"
 
-    def __init__(self, root: Path, source_dir: Path, staging_dir: Path, plan: ApplyPlan):
+    def __init__(
+        self,
+        root: Path,
+        source_dir: Path,
+        staging_dir: Path,
+        plan: ApplyPlan,
+        *,
+        staging_root_identity: tuple[int, int] | None = None,
+    ):
         self.root = root
         self.source_dir = source_dir
         self.staging_dir = staging_dir
         self.plan = plan
+        self.staging_root_identity = staging_root_identity
         self.snapshot_dir = root / self.SNAPSHOT
         self.journal_path = root / self.JOURNAL
         self.existed: set[str] = set()
@@ -153,6 +162,8 @@ class FileTransaction:
         source_dir: Path,
         staging_dir: Path,
         plan: ApplyPlan,
+        *,
+        staging_root_identity: tuple[int, int] | None = None,
     ) -> "FileTransaction":
         if not plan.affected_paths:
             raise TransactionError("refusing empty remote apply transaction")
@@ -171,7 +182,13 @@ class FileTransaction:
 
         root.mkdir(parents=True, exist_ok=False)
         _fsync_directory(root.parent)
-        tx = cls(root, source_dir, staging_dir, plan)
+        tx = cls(
+            root,
+            source_dir,
+            staging_dir,
+            plan,
+            staging_root_identity=staging_root_identity,
+        )
         tx.existed = existed
         try:
             tx._write_journal("preparing")
@@ -319,7 +336,12 @@ class FileTransaction:
         try:
             for relative in self.plan.write_paths:
                 source = self.staging_dir / relative
-                live_fs.replace_from(relative, source, self.plan.write_hashes[relative])
+                live_fs.replace_from(
+                    relative,
+                    source,
+                    self.plan.write_hashes[relative],
+                    expected_source_root_identity=self.staging_root_identity,
+                )
             for relative in self.plan.delete_paths:
                 live_fs.delete(relative)
         except LiveFilesystemError as exc:
@@ -415,9 +437,6 @@ def execute_verified_transaction(
     restart_requested = False
     try:
         transaction.apply()
-        # Keep the verified backup continuously present across the first live mutation.
-        # If it disappears or no longer proves the requested HA payload, roll the local
-        # snapshot back while the old Core process is still running.
         supervisor.verify_homeassistant_backup(slug, backup_name)
         supervisor.check_core_configuration()
         transaction.mark("configuration_valid")

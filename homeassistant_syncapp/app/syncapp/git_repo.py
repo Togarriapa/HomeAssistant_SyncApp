@@ -363,7 +363,18 @@ class GitRepository:
         resolved = self._run("rev-parse", "--verify", f"{commit}^{{commit}}").stdout.strip()
         if resolved != commit:
             raise GitError("refusing push because expected commit did not resolve exactly")
-        self._run("push", "-u", "origin", f"{commit}:refs/heads/{self.branch}")
+        remote_ref = f"refs/heads/{self.branch}"
+        self._run("push", "-u", "origin", f"{commit}:{remote_ref}")
+
+        published = [
+            line.split("\t", 1)
+            for line in self._run("ls-remote", "--heads", "origin", remote_ref).stdout.splitlines()
+            if line.strip()
+        ]
+        if published != [[commit, remote_ref]]:
+            raise GitError(
+                "push completed but authoritative remote branch does not identify the expected commit"
+            )
 
     def adopt_remote(self, expected_commit: str) -> None:
         remote = self.remote_head()

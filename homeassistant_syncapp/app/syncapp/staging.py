@@ -7,12 +7,12 @@ import json
 import os
 from pathlib import Path
 import shutil
-import stat
 
 import yaml
 
 from .git_repo import GitRepository, GitTreeEntry
-from .policy import collect_allowed_files, is_allowed_relative
+from .policy import BLOCKED_DIR_NAMES, is_allowed_relative
+from .read_evidence import PinnedReadRoot, ReadEvidenceError
 from .staging_fs import StagingFilesystem, StagingFilesystemError
 
 
@@ -109,46 +109,49 @@ def _validate_file_bytes(relative: str, raw: bytes) -> None:
             raise StagingValidationError(f"invalid Python syntax in {relative}: {exc}") from exc
 
 
-def _assert_root_identity(root: Path, expected: tuple[int, int]) -> None:
+def validate_configuration_directory(
+    root: Path,
+    *,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> DirectoryValidationResult:
+    """Validate and hash policy-allowed bytes through descriptor-pinned evidence."""
     try:
-        info = os.stat(root, follow_symlinks=False)
-    except OSError as exc:
+        with PinnedReadRoot(
+            root,
+            expected_identity=expected_root_identity,
+            label="staging validation",
+        ) as evidence:
+            files = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            total_bytes = 0
+            hashes: list[tuple[str, str]] = []
+            for relative in files:
+                raw = evidence.read_bytes(relative, max_bytes=MAX_FILE_BYTES)
+                size = len(raw)
+                total_bytes += size
+                if total_bytes > MAX_TOTAL_BYTES:
+                    raise StagingValidationError(
+                        f"configuration tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
+                    )
+                _validate_file_bytes(relative, raw)
+                hashes.append((relative, hashlib.sha256(raw).hexdigest()))
+
+            final_files = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            if final_files != files:
+                raise StagingValidationError(
+                    "configuration path set changed during descriptor-pinned validation"
+                )
+            evidence.assert_path_identity()
+    except ReadEvidenceError as exc:
         raise StagingValidationError(
-            f"staging root pathname no longer identifies the validated tree: {exc}"
+            f"staging filesystem validation failed: {exc}"
         ) from exc
-    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != expected:
-        raise StagingValidationError(
-            "staging root pathname was replaced after validation"
-        )
 
-
-def validate_configuration_directory(root: Path) -> DirectoryValidationResult:
-    """Validate and hash exactly the policy-allowed bytes in a materialized tree."""
-    files = sorted(collect_allowed_files(root))
-    total_bytes = 0
-    hashes: list[tuple[str, str]] = []
-    for relative in files:
-        path = root / relative
-        if path.is_symlink() or not path.is_file():
-            raise StagingValidationError(f"configuration path is not a regular file: {relative}")
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            raise StagingValidationError(
-                f"cannot read configuration path {relative!r} during validation: {exc}"
-            ) from exc
-        size = len(raw)
-        if size > MAX_FILE_BYTES:
-            raise StagingValidationError(
-                f"configuration path {relative!r} exceeds {MAX_FILE_BYTES} byte limit"
-            )
-        total_bytes += size
-        if total_bytes > MAX_TOTAL_BYTES:
-            raise StagingValidationError(
-                f"configuration tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
-            )
-        _validate_file_bytes(relative, raw)
-        hashes.append((relative, hashlib.sha256(raw).hexdigest()))
     return DirectoryValidationResult(
         file_count=len(files),
         total_bytes=total_bytes,
@@ -160,11 +163,10 @@ def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
     """Re-prove that staging still names the exact tree and bytes that passed validation."""
     if not staged.integrity_bound:
         return
-    if staged.root_identity is not None:
-        _assert_root_identity(root, staged.root_identity)
-    validated = validate_configuration_directory(root)
-    if staged.root_identity is not None:
-        _assert_root_identity(root, staged.root_identity)
+    validated = validate_configuration_directory(
+        root,
+        expected_root_identity=staged.root_identity,
+    )
     if validated.file_count != staged.file_count:
         raise StagingValidationError("staging file count changed after validation")
     if validated.total_bytes != staged.total_bytes:
@@ -227,7 +229,11 @@ def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> 
                 staging_fs.write_new(entry.path, content, digest)
 
             staging_fs.assert_path_identity()
-            validated = validate_configuration_directory(temporary)
+            validation_identity = staging_fs.root_identity()
+            validated = validate_configuration_directory(
+                temporary,
+                expected_root_identity=validation_identity,
+            )
             staging_fs.assert_path_identity()
             expected_hashes = tuple(sorted(git_hashes))
             if validated.file_count != len(planned) or validated.total_bytes != total_bytes:

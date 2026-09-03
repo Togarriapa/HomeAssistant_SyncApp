@@ -213,7 +213,19 @@ class SyncEngine:
 
         try:
             validated = validate_configuration_directory(self.settings.repository_dir)
+            live_before = validate_configuration_directory(self.settings.source_dir)
+            if live_before.file_sha256 != validated.file_sha256:
+                raise StagingValidationError(
+                    "live configuration no longer matches the mirrored candidate before semantic validation"
+                )
+
             SupervisorClient().check_core_configuration()
+
+            live_after = validate_configuration_directory(self.settings.source_dir)
+            if live_after.file_sha256 != validated.file_sha256:
+                raise StagingValidationError(
+                    "live configuration changed during Home Assistant semantic validation"
+                )
         except (StagingValidationError, SupervisorError) as exc:
             self.repository.discard_worktree_changes()
             LOGGER.error(

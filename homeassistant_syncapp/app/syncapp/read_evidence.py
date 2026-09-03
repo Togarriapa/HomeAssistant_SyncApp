@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -91,7 +92,94 @@ class PinnedReadRoot:
         if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != identity:
             raise ReadEvidenceError(f"{self.label} root pathname was replaced during revalidation")
 
-    def sha256(self, relative: str) -> str:
+    def regular_files(
+        self,
+        *,
+        skip_dir_names: frozenset[str] = frozenset(),
+        allow_file: Callable[[str], bool] | None = None,
+    ) -> tuple[str, ...]:
+        """Enumerate regular files without following mutable directory pathnames."""
+        root_fd, _ = self._require_open()
+        directory_flags = (
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        files: list[str] = []
+
+        def visit(directory_fd: int, prefix: tuple[str, ...]) -> None:
+            try:
+                names = sorted(os.listdir(directory_fd))
+            except OSError as exc:
+                raise ReadEvidenceError(
+                    f"cannot enumerate {self.label} directory safely: {exc}"
+                ) from exc
+
+            for name in names:
+                relative = "/".join((*prefix, name))
+                try:
+                    entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise ReadEvidenceError(
+                        f"cannot inspect {self.label} path {relative} safely: {exc}"
+                    ) from exc
+
+                if stat.S_ISDIR(entry.st_mode):
+                    if name in skip_dir_names:
+                        continue
+                    child_fd: int | None = None
+                    try:
+                        child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                        opened = os.fstat(child_fd)
+                    except OSError as exc:
+                        if child_fd is not None:
+                            os.close(child_fd)
+                        raise ReadEvidenceError(
+                            f"cannot open {self.label} directory {relative} safely: {exc}"
+                        ) from exc
+                    if (
+                        not stat.S_ISDIR(opened.st_mode)
+                        or (entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino)
+                    ):
+                        os.close(child_fd)
+                        raise ReadEvidenceError(
+                            f"{self.label} directory {relative} was replaced while being opened"
+                        )
+                    try:
+                        visit(child_fd, (*prefix, name))
+                    finally:
+                        os.close(child_fd)
+                    try:
+                        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    except OSError as exc:
+                        raise ReadEvidenceError(
+                            f"cannot revalidate {self.label} directory {relative}: {exc}"
+                        ) from exc
+                    if (
+                        not stat.S_ISDIR(current.st_mode)
+                        or _stable_identity(current) != _stable_identity(opened)
+                    ):
+                        raise ReadEvidenceError(
+                            f"{self.label} directory {relative} was replaced during enumeration"
+                        )
+                    continue
+
+                permitted = allow_file(relative) if allow_file is not None else True
+                if stat.S_ISREG(entry.st_mode):
+                    if permitted:
+                        files.append(relative)
+                    continue
+                if permitted:
+                    raise ReadEvidenceError(
+                        f"{self.label} path {relative} is not a regular file"
+                    )
+
+        try:
+            visit(root_fd, ())
+            self.assert_path_identity()
+            return tuple(files)
+        except OSError as exc:
+            raise ReadEvidenceError(f"cannot enumerate {self.label} safely: {exc}") from exc
+
+    def read_bytes(self, relative: str, *, max_bytes: int | None = None) -> bytes:
         root_fd, _ = self._require_open()
         parts = _relative_parts(relative)
         directory_flags = (
@@ -145,15 +233,23 @@ class PinnedReadRoot:
                     raise ReadEvidenceError(
                         f"{self.label} file {relative} changed type or identity while being opened"
                     )
+                if max_bytes is not None and before.st_size > max_bytes:
+                    raise ReadEvidenceError(
+                        f"{self.label} file {relative} exceeds {max_bytes} byte limit"
+                    )
 
-                digest = hashlib.sha256()
+                chunks: list[bytes] = []
                 total = 0
                 while True:
                     chunk = os.read(fd, 1024 * 1024)
                     if not chunk:
                         break
-                    digest.update(chunk)
                     total += len(chunk)
+                    if max_bytes is not None and total > max_bytes:
+                        raise ReadEvidenceError(
+                            f"{self.label} file {relative} exceeds {max_bytes} byte limit"
+                        )
+                    chunks.append(chunk)
 
                 after = os.fstat(fd)
                 if _stable_identity(before) != _stable_identity(after) or total != after.st_size:
@@ -179,9 +275,12 @@ class PinnedReadRoot:
                         f"{self.label} parent {name} was replaced while evidence was being read"
                     )
             self.assert_path_identity()
-            return digest.hexdigest()
+            return b"".join(chunks)
         except OSError as exc:
             raise ReadEvidenceError(f"cannot revalidate {self.label} safely: {exc}") from exc
         finally:
             for fd in reversed(opened_dirs):
                 os.close(fd)
+
+    def sha256(self, relative: str) -> str:
+        return hashlib.sha256(self.read_bytes(relative)).hexdigest()

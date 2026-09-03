@@ -4,10 +4,13 @@ import unittest
 from unittest import mock
 
 import syncapp.recovery_loader as recovery_loader
-import syncapp.transaction_evidence as transaction_evidence
 from syncapp.recovery_loader import load_active_transaction
 from syncapp.transaction import ApplyPlan, FileTransaction, TransactionError
-from syncapp.transaction_evidence import MAX_TRANSACTION_JOURNAL_BYTES
+from syncapp.transaction_evidence import (
+    MAX_TRANSACTION_JOURNAL_BYTES,
+    TransactionEvidenceError,
+    TransactionEvidenceRoot,
+)
 
 
 class RecoveryLoaderSafetyTests(unittest.TestCase):
@@ -94,35 +97,22 @@ class RecoveryLoaderSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(TransactionError, "exceeds.*size limit"):
                 load_active_transaction(root, base / "live", base / "staging")
 
-    def test_journal_directory_entry_replacement_during_read_is_rejected(self) -> None:
+    def test_journal_directory_entry_replacement_is_rejected_by_inode_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            root, live, staging = self._prepared_transaction(base)
+            root, _, _ = self._prepared_transaction(base)
             journal = root / FileTransaction.JOURNAL
             original = journal.read_bytes()
-            replaced = False
-            real_read = transaction_evidence.os.read
+            expected = journal.stat()
 
-            def read_then_replace(fd: int, size: int) -> bytes:
-                nonlocal replaced
-                chunk = real_read(fd, size)
-                if chunk and not replaced:
-                    journal.rename(root / "journal.opened.json")
-                    journal.write_bytes(original)
-                    replaced = True
-                return chunk
-
-            with mock.patch.object(
-                transaction_evidence.os,
-                "read",
-                side_effect=read_then_replace,
-            ):
+            with TransactionEvidenceRoot(root) as evidence:
+                journal.rename(root / "journal.opened.json")
+                journal.write_bytes(original)
                 with self.assertRaisesRegex(
-                    TransactionError, "journal.json was replaced or changed"
+                    TransactionEvidenceError, "journal.json was replaced or changed"
                 ):
-                    load_active_transaction(root, live, staging)
+                    evidence._assert_child_identity(FileTransaction.JOURNAL, expected)
 
-            self.assertTrue(replaced)
             self.assertEqual((root / "journal.opened.json").read_bytes(), original)
             self.assertEqual(journal.read_bytes(), original)
 

@@ -215,7 +215,11 @@ class FileTransaction:
             for relative in sorted(existed):
                 backup = tx.snapshot_dir / relative
                 try:
-                    tx.snapshot_sha256[relative] = live_fs.copy_to(relative, backup)
+                    tx.snapshot_sha256[relative] = live_fs.copy_to(
+                        relative,
+                        backup,
+                        expected_destination_root_identity=tx.snapshot_root_identity,
+                    )
                 except LiveFilesystemError as exc:
                     raise _as_transaction_error(exc) from exc
                 _fsync_directory(backup.parent)

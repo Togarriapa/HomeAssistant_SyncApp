@@ -108,7 +108,7 @@ class RollbackSnapshotRootIdentityTests(unittest.TestCase):
             self._replace_snapshot_root_byte_identically(loaded)
             with self.assertRaisesRegex(
                 TransactionError,
-                "rollback snapshot root was replaced after validation",
+                "rollback snapshot root no longer identifies validated evidence",
             ):
                 loaded.rollback()
 

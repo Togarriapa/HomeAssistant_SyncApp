@@ -379,8 +379,13 @@ class FileTransaction:
             os.close(root_fd)
 
     def record_supervisor_backup(self, identifier: str) -> None:
+        previous = self.supervisor_backup
         self.supervisor_backup = identifier
-        self._write_journal("backed_up")
+        try:
+            self._write_journal("backed_up")
+        except Exception:
+            self.supervisor_backup = previous
+            raise
 
     def mark(self, state: str) -> None:
         self._write_journal(state)

@@ -222,7 +222,6 @@ class FileTransaction:
                     )
                 except LiveFilesystemError as exc:
                     raise _as_transaction_error(exc) from exc
-                _fsync_directory(backup.parent)
             tx._assert_snapshot_root_identity()
             tx._write_journal("prepared")
         except Exception:

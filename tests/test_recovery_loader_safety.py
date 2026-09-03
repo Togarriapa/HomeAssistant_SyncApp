@@ -116,6 +116,70 @@ class RecoveryLoaderSafetyTests(unittest.TestCase):
             self.assertEqual((root / "journal.opened.json").read_bytes(), original)
             self.assertEqual(journal.read_bytes(), original)
 
+    def test_symlinked_snapshot_root_is_rejected_without_hashing_outside_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, live, staging = self._prepared_transaction(base)
+            snapshot = root / FileTransaction.SNAPSHOT
+            preserved = root / "snapshot.opened"
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "configuration.yaml").write_text(
+                "homeassistant:\n  name: Outside\n", encoding="utf-8"
+            )
+            snapshot.rename(preserved)
+            snapshot.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(
+                TransactionError, "rollback snapshot safely.*symlinks are refused"
+            ):
+                load_active_transaction(root, live, staging)
+
+            self.assertEqual(
+                (outside / "configuration.yaml").read_text(encoding="utf-8"),
+                "homeassistant:\n  name: Outside\n",
+            )
+            self.assertTrue((preserved / "configuration.yaml").is_file())
+
+    def test_snapshot_root_replacement_after_journal_read_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, live, staging = self._prepared_transaction(base)
+            snapshot = root / FileTransaction.SNAPSHOT
+            preserved = root / "snapshot.opened"
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "configuration.yaml").write_text(
+                "homeassistant:\n  name: Outside\n", encoding="utf-8"
+            )
+            real_snapshot_hashes = TransactionEvidenceRoot.snapshot_hashes
+            swapped = False
+
+            def swap_then_hash(evidence, name=FileTransaction.SNAPSHOT):
+                nonlocal swapped
+                snapshot.rename(preserved)
+                snapshot.symlink_to(outside, target_is_directory=True)
+                swapped = True
+                return real_snapshot_hashes(evidence, name)
+
+            with mock.patch.object(
+                TransactionEvidenceRoot,
+                "snapshot_hashes",
+                side_effect=swap_then_hash,
+                autospec=True,
+            ):
+                with self.assertRaisesRegex(
+                    TransactionError, "rollback snapshot safely.*symlinks are refused"
+                ):
+                    load_active_transaction(root, live, staging)
+
+            self.assertTrue(swapped)
+            self.assertTrue((preserved / "configuration.yaml").is_file())
+            self.assertEqual(
+                (outside / "configuration.yaml").read_text(encoding="utf-8"),
+                "homeassistant:\n  name: Outside\n",
+            )
+
     def test_valid_prepared_transaction_loads_through_safe_evidence_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -135,9 +199,13 @@ class RecoveryLoaderSafetyTests(unittest.TestCase):
             real_validate = recovery_loader.validate_journal_payload
             swapped = False
 
-            def validate_then_swap(data, snapshot_dir):
+            def validate_then_swap(data, snapshot_dir, *, snapshot_hash_provider=None):
                 nonlocal swapped
-                record = real_validate(data, snapshot_dir)
+                record = real_validate(
+                    data,
+                    snapshot_dir,
+                    snapshot_hash_provider=snapshot_hash_provider,
+                )
                 root.rename(moved)
                 root.mkdir()
                 (root / "replacement-marker").write_text("replacement", encoding="utf-8")

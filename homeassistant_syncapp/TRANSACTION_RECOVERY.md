@@ -8,7 +8,9 @@ Production recovery opens `/data/transaction` as a directory with `O_DIRECTORY|O
 
 The journal leaf is opened relative to that directory descriptor with `O_NOFOLLOW`, must be a regular file, and is capped at 1 MiB. SyncApp records file metadata before reading and rechecks device/inode/size/mtime/ctime afterward; a journal that changes while being read is rejected. It then stats the `journal.json` directory entry again relative to the still-open transaction root and requires that entry to identify the same regular-file device/inode/size/mtime/ctime that was read. Renaming the opened journal away and replacing its pathname with a different file therefore fails closed instead of allowing recovery to act on detached stale evidence. UTF-8/JSON parsing happens only after this bounded stable read and directory-entry identity proof.
 
-Snapshot validation still traverses the transaction pathname, so the originally opened root descriptor remains alive across that validation. Before returning any recovery record, SyncApp requires the transaction pathname to still identify the same directory device/inode. A root rename/symlink/directory replacement during validation therefore fails closed before parsed recovery state can drive rollback.
+Rollback snapshot validation is also rooted at that same opened transaction descriptor. SyncApp opens the `snapshot` directory relative to the pinned root with `O_DIRECTORY|O_NOFOLLOW`, recursively opens child directories and files relative to already-open parent descriptors, refuses symlinks and non-regular/non-directory entries, hashes files through opened descriptors, and requires device/inode/size/mtime/ctime to remain stable across each read. After a child is inspected, its directory entry must still identify the same opened object. A snapshot root, nested directory, or file that is renamed, replaced, or changed during recovery therefore fails closed rather than allowing rollback decisions to depend on detached or outside-tree bytes.
+
+After journal and snapshot evidence has been validated, SyncApp additionally requires the `/data/transaction` pathname itself to still identify the same directory device/inode that was opened at the start. A transaction-root rename/symlink/directory replacement during validation therefore fails closed before parsed recovery state can drive rollback or finalization.
 
 A transaction directory that exists without a journal is not guessed away. Only a genuinely empty orphan root is removed, and that cleanup re-verifies the opened root identity and removes the child relative to an opened no-follow parent directory. Non-empty journal-less roots remain an operator-visible ambiguity.
 
@@ -24,18 +26,18 @@ Structurally valid version `1` journals remain readable so an upgrade does not s
 
 Before SyncApp interprets a recovery state it validates that:
 
-- the transaction root and journal leaf pass the descriptor/no-follow and stability checks above;
+- the transaction root, journal leaf, snapshot root, nested snapshot directories, and snapshot files pass the descriptor/no-follow and stability checks above;
 - the journal is a JSON object with a supported version and known transaction state;
 - the referenced commit is a syntactically valid Git object identifier;
 - write, delete, and `existed` entries are unique policy-approved relative paths;
 - write and delete sets do not overlap and the apply plan is not empty;
 - staged-content SHA-256 entries are syntactically valid and refer only to write paths;
 - `existed` is a subset of the transaction's affected paths;
-- version-2 rollback snapshot hashes cover the exact `existed` set and match the snapshot bytes;
+- version-2 rollback snapshot hashes cover the exact `existed` set and match the descriptor-read snapshot bytes;
 - any recorded Supervisor backup slug is syntactically safe;
 - version-2 journal integrity metadata matches the exact journal payload.
 
-After preparation has completed, SyncApp enumerates the rollback snapshot without following symlinks and requires its regular-file set to match the journal's `existed` set exactly. This is important because `existed` controls rollback semantics: a path marked as previously existing is restored from the snapshot, while an affected path that did not previously exist is deleted during rollback.
+After preparation has completed, SyncApp enumerates the rollback snapshot through pinned descriptors and requires its regular-file set to match the journal's `existed` set exactly. This is important because `existed` controls rollback semantics: a path marked as previously existing is restored from the snapshot, while an affected path that did not previously exist is deleted during rollback.
 
 If that relationship, the pinned root identity, journal stability, or pinned snapshot content cannot be proven, SyncApp must not guess. The live configuration, transaction journal, and snapshot remain in place and the synchronization cycle fails closed for operator investigation.
 

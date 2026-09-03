@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from .apply import (
@@ -8,7 +9,7 @@ from .apply import (
     recover_interrupted_apply,
 )
 from .config import Settings
-from .git_repo import GitRepository
+from .git_repo import GitError, GitRepository
 from .mirror import ManifestError, load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
 from .staging import (
@@ -21,6 +22,28 @@ from .transaction import TransactionError
 
 
 LOGGER = logging.getLogger(__name__)
+_ALLOWED_INDEX_MODES = {"100644", "100755"}
+
+
+def _index_sha256_manifest(repository: GitRepository) -> tuple[tuple[str, str], ...]:
+    try:
+        entries = repository.index_tree_entries()
+        manifest: list[tuple[str, str]] = []
+        for entry in entries:
+            if (
+                entry.object_type != "blob"
+                or entry.mode not in _ALLOWED_INDEX_MODES
+                or not is_allowed_relative(entry.path)
+            ):
+                raise StagingValidationError(
+                    f"staged Git index contains unsupported or blocked entry: {entry.path}"
+                )
+            manifest.append(
+                (entry.path, hashlib.sha256(repository.read_blob(entry.object_id)).hexdigest())
+            )
+        return tuple(sorted(manifest))
+    except GitError as exc:
+        raise StagingValidationError(f"could not bind staged Git index: {exc}") from exc
 
 
 class SyncEngine:
@@ -213,6 +236,11 @@ class SyncEngine:
 
         try:
             validated = validate_configuration_directory(self.settings.repository_dir)
+            if _index_sha256_manifest(self.repository) != validated.file_sha256:
+                raise StagingValidationError(
+                    "staged Git index does not match the statically validated local candidate"
+                )
+
             live_before = validate_configuration_directory(self.settings.source_dir)
             if live_before.file_sha256 != validated.file_sha256:
                 raise StagingValidationError(
@@ -225,6 +253,10 @@ class SyncEngine:
             if live_after.file_sha256 != validated.file_sha256:
                 raise StagingValidationError(
                     "live configuration changed during Home Assistant semantic validation"
+                )
+            if _index_sha256_manifest(self.repository) != validated.file_sha256:
+                raise StagingValidationError(
+                    "staged Git index changed during Home Assistant semantic validation"
                 )
         except (StagingValidationError, SupervisorError) as exc:
             self.repository.discard_worktree_changes()

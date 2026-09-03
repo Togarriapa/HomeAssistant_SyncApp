@@ -286,6 +286,13 @@ class GitRepository:
             return []
         return self.tree_entries(remote)
 
+    def index_tree_entries(self) -> list[GitTreeEntry]:
+        """Return the exact tree represented by the staged Git index."""
+        tree = self._run("write-tree").stdout.strip()
+        if not tree:
+            raise GitError("git write-tree returned no staged tree")
+        return self.tree_entries(tree)
+
     def blob_size(self, object_id: str) -> int:
         output = self._run("cat-file", "-s", object_id).stdout.strip()
         try:

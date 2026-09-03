@@ -95,7 +95,7 @@ class StagingValidationBindingTests(unittest.TestCase):
             with self.assertRaisesRegex(StagingValidationError, "file count changed"):
                 assert_staging_integrity(staging, result)
 
-    def test_symlink_parent_replacement_changes_bound_file_set(self) -> None:
+    def test_symlink_parent_replacement_is_rejected_by_confinement(self) -> None:
         repository = FakeRepository(
             {"packages/remote.yaml": b"automation: []\n"}
         )
@@ -111,8 +111,13 @@ class StagingValidationBindingTests(unittest.TestCase):
             (staging / "packages").rmdir()
             (staging / "packages").symlink_to(outside, target_is_directory=True)
 
-            with self.assertRaisesRegex(StagingValidationError, "file count changed"):
+            with self.assertRaisesRegex(StagingValidationError, "not a regular file"):
                 assert_staging_integrity(staging, result)
+
+            self.assertEqual(
+                (outside / "remote.yaml").read_text(encoding="utf-8"),
+                "automation: []\n",
+            )
 
 
 if __name__ == "__main__":

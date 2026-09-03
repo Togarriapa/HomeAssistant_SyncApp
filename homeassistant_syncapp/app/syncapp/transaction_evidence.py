@@ -69,6 +69,33 @@ class TransactionEvidenceRoot:
                 "transaction root pathname was replaced while recovery evidence was being validated"
             )
 
+    def _assert_child_identity(self, name: str, expected: os.stat_result) -> None:
+        root_fd, _ = self._require_open()
+        try:
+            current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise TransactionEvidenceError(
+                f"transaction evidence entry {name} disappeared or became inaccessible while being read: {exc}"
+            ) from exc
+        expected_identity = (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_size,
+            expected.st_mtime_ns,
+            expected.st_ctime_ns,
+        )
+        current_identity = (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+            current.st_ctime_ns,
+        )
+        if not stat.S_ISREG(current.st_mode) or current_identity != expected_identity:
+            raise TransactionEvidenceError(
+                f"transaction evidence entry {name} was replaced or changed while being read"
+            )
+
     def read_journal_text(self, name: str = "journal.json") -> str | None:
         root_fd, _ = self._require_open()
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -123,6 +150,7 @@ class TransactionEvidenceRoot:
                 raise TransactionEvidenceError(
                     "transaction journal changed while recovery evidence was being read"
                 )
+            self._assert_child_identity(name, after)
             raw = b"".join(chunks)
             try:
                 return raw.decode("utf-8")

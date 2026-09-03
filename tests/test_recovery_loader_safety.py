@@ -6,7 +6,11 @@ from unittest import mock
 import syncapp.recovery_loader as recovery_loader
 from syncapp.recovery_loader import load_active_transaction
 from syncapp.transaction import ApplyPlan, FileTransaction, TransactionError
-from syncapp.transaction_evidence import MAX_TRANSACTION_JOURNAL_BYTES
+from syncapp.transaction_evidence import (
+    MAX_TRANSACTION_JOURNAL_BYTES,
+    TransactionEvidenceError,
+    TransactionEvidenceRoot,
+)
 
 
 class RecoveryLoaderSafetyTests(unittest.TestCase):
@@ -92,6 +96,25 @@ class RecoveryLoaderSafetyTests(unittest.TestCase):
 
             with self.assertRaisesRegex(TransactionError, "exceeds.*size limit"):
                 load_active_transaction(root, base / "live", base / "staging")
+
+    def test_journal_directory_entry_replacement_is_rejected_by_inode_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, _, _ = self._prepared_transaction(base)
+            journal = root / FileTransaction.JOURNAL
+            original = journal.read_bytes()
+            expected = journal.stat()
+
+            with TransactionEvidenceRoot(root) as evidence:
+                journal.rename(root / "journal.opened.json")
+                journal.write_bytes(original)
+                with self.assertRaisesRegex(
+                    TransactionEvidenceError, "journal.json was replaced or changed"
+                ):
+                    evidence._assert_child_identity(FileTransaction.JOURNAL, expected)
+
+            self.assertEqual((root / "journal.opened.json").read_bytes(), original)
+            self.assertEqual(journal.read_bytes(), original)
 
     def test_valid_prepared_transaction_loads_through_safe_evidence_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

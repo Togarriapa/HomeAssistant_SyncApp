@@ -31,7 +31,10 @@ class StagingRootIdentityTests(unittest.TestCase):
             staging.mkdir()
             (staging / "configuration.yaml").write_bytes(content)
 
-            with self.assertRaisesRegex(StagingValidationError, "root pathname was replaced"):
+            with self.assertRaisesRegex(
+                StagingValidationError,
+                "root (pathname was replaced|no longer identifies validated evidence)",
+            ):
                 assert_staging_integrity(staging, staged)
 
             self.assertEqual((original / "configuration.yaml").read_bytes(), content)

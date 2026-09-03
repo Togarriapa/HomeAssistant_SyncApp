@@ -36,6 +36,21 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        stat.S_IFMT(info.st_mode),
+    )
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+
 class LiveFilesystem:
     """Descriptor-relative access to the live Home Assistant configuration tree."""
 
@@ -93,6 +108,123 @@ class LiveFilesystem:
             yield current, parts[-1]
         finally:
             os.close(current)
+
+    @contextmanager
+    def _open_replacement_source(
+        self, relative: str, source: Path
+    ) -> Iterator[tuple[int, int]]:
+        """Open a staged/rollback source beneath its inferred root without pathname traversal.
+
+        FileTransaction always passes ``source_root / relative``. Derive that root
+        lexically from the already policy-approved relative path, then pin the root,
+        every parent directory entry, and the leaf before bytes are copied. The
+        complete directory-entry chain and leaf metadata are rechecked before the
+        caller is allowed to replace live configuration.
+        """
+
+        parts = self._parts(relative)
+        source = Path(source)
+        source_root = source
+        for _ in parts:
+            source_root = source_root.parent
+        if source_root.joinpath(*parts) != source:
+            raise LiveFilesystemError(f"replacement source is not rooted at expected path: {relative}")
+        if source_root.is_symlink():
+            raise LiveFilesystemError(f"replacement source root must not be a symlink: {relative}")
+
+        directory_flags = (
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        directory_fds: list[int] = []
+        directory_links: list[tuple[int, str, tuple[int, int, int]]] = []
+        source_fd: int | None = None
+        try:
+            try:
+                root_fd = os.open(source_root, directory_flags)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"cannot open replacement source root safely: {relative}: {exc}"
+                ) from exc
+            directory_fds.append(root_fd)
+            root_info = os.fstat(root_fd)
+            if not stat.S_ISDIR(root_info.st_mode):
+                raise LiveFilesystemError(f"replacement source root is not a directory: {relative}")
+            root_identity = _directory_identity(root_info)
+
+            current = root_fd
+            for part in parts[:-1]:
+                try:
+                    child = os.open(part, directory_flags, dir_fd=current)
+                    child_info = os.fstat(child)
+                    entry_info = os.stat(part, dir_fd=current, follow_symlinks=False)
+                except OSError as exc:
+                    raise LiveFilesystemError(
+                        f"refusing unsafe replacement source parent: {relative}: {exc}"
+                    ) from exc
+                if not stat.S_ISDIR(child_info.st_mode) or _directory_identity(entry_info) != _directory_identity(
+                    child_info
+                ):
+                    os.close(child)
+                    raise LiveFilesystemError(
+                        f"replacement source parent changed while opening: {relative}"
+                    )
+                directory_links.append((current, part, _directory_identity(child_info)))
+                directory_fds.append(child)
+                current = child
+
+            leaf = parts[-1]
+            try:
+                source_fd = os.open(leaf, file_flags, dir_fd=current)
+                initial_info = os.fstat(source_fd)
+                initial_entry = os.stat(leaf, dir_fd=current, follow_symlinks=False)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"cannot open replacement source safely (symlinks are refused): {relative}: {exc}"
+                ) from exc
+            if not stat.S_ISREG(initial_info.st_mode):
+                raise LiveFilesystemError(f"replacement source is not a regular file: {relative}")
+            initial_identity = _file_identity(initial_info)
+            if _file_identity(initial_entry) != initial_identity:
+                raise LiveFilesystemError(f"replacement source changed while opening: {relative}")
+
+            yield source_fd, stat.S_IMODE(initial_info.st_mode)
+
+            final_info = os.fstat(source_fd)
+            try:
+                final_entry = os.stat(leaf, dir_fd=current, follow_symlinks=False)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"replacement source disappeared after reading: {relative}: {exc}"
+                ) from exc
+            if _file_identity(final_info) != initial_identity or _file_identity(final_entry) != initial_identity:
+                raise LiveFilesystemError(f"replacement source changed while copying: {relative}")
+
+            for parent_fd, name, expected_identity in directory_links:
+                try:
+                    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise LiveFilesystemError(
+                        f"replacement source parent disappeared after reading: {relative}: {exc}"
+                    ) from exc
+                if _directory_identity(entry) != expected_identity:
+                    raise LiveFilesystemError(
+                        f"replacement source parent changed while copying: {relative}"
+                    )
+
+            try:
+                final_root = os.stat(source_root, follow_symlinks=False)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"replacement source root disappeared after reading: {relative}: {exc}"
+                ) from exc
+            if _directory_identity(final_root) != root_identity:
+                raise LiveFilesystemError(f"replacement source root changed while copying: {relative}")
+        finally:
+            if source_fd is not None:
+                os.close(source_fd)
+            for descriptor in reversed(directory_fds):
+                os.close(descriptor)
 
     def exists_regular(self, relative: str) -> bool:
         try:
@@ -157,8 +289,6 @@ class LiveFilesystem:
                 os.close(source_fd)
 
     def replace_from(self, relative: str, source: Path, expected_sha256: str) -> None:
-        if source.is_symlink() or not source.is_file():
-            raise LiveFilesystemError(f"replacement source is not a regular file: {relative}")
         with self._open_parent(relative, create=True) as (parent_fd, leaf):
             temporary = f".{leaf}.syncapp-new"
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -175,9 +305,10 @@ class LiveFilesystem:
                     ) from exc
                 try:
                     digest = hashlib.sha256()
-                    with source.open("rb") as source_handle:
+                    with self._open_replacement_source(relative, source) as (source_fd, source_mode):
+                        os.lseek(source_fd, 0, os.SEEK_SET)
                         while True:
-                            chunk = source_handle.read(1024 * 1024)
+                            chunk = os.read(source_fd, 1024 * 1024)
                             if not chunk:
                                 break
                             digest.update(chunk)
@@ -185,10 +316,10 @@ class LiveFilesystem:
                             while view:
                                 written = os.write(temp_fd, view)
                                 view = view[written:]
-                    if digest.hexdigest() != expected_sha256:
-                        raise LiveFilesystemError(f"staged content changed while copying: {relative}")
-                    os.fchmod(temp_fd, stat.S_IMODE(source.stat().st_mode))
-                    os.fsync(temp_fd)
+                        if digest.hexdigest() != expected_sha256:
+                            raise LiveFilesystemError(f"staged content changed while copying: {relative}")
+                        os.fchmod(temp_fd, source_mode)
+                        os.fsync(temp_fd)
                 finally:
                     os.close(temp_fd)
                 os.replace(temporary, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)

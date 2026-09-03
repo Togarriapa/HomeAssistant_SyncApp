@@ -60,13 +60,14 @@ class TransactionJournalWriteConfinementTests(unittest.TestCase):
                 TransactionError,
                 "pre-existing transaction journal temporary file",
             ):
-                transaction.mark("backed_up")
+                transaction.record_supervisor_backup("backup-123")
 
             self.assertTrue(temporary_leaf.is_symlink())
             self.assertEqual(outside.read_text(encoding="utf-8"), "do not touch\n")
             journal = json.loads(transaction.journal_path.read_text(encoding="utf-8"))
             self.assertEqual(journal["state"], "prepared")
             self.assertEqual(transaction.state, "prepared")
+            self.assertIsNone(transaction.supervisor_backup)
 
 
 if __name__ == "__main__":

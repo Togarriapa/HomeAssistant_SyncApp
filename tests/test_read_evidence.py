@@ -76,6 +76,38 @@ class PinnedReadRootTests(unittest.TestCase):
             self.assertEqual((root / "config.yaml").read_text(), "same: true\n")
             self.assertEqual((base / "detached" / "config.yaml").read_text(), "same: true\n")
 
+    def test_refuses_byte_identical_parent_replacement_during_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            parent = root / "packages"
+            parent.mkdir(parents=True)
+            (parent / "config.yaml").write_text("same: true\n", encoding="utf-8")
+            replacement = root / "replacement"
+            replacement.mkdir()
+            (replacement / "config.yaml").write_text("same: true\n", encoding="utf-8")
+            original_read = os.read
+            swapped = False
+
+            def swapping_read(fd: int, size: int) -> bytes:
+                nonlocal swapped
+                data = original_read(fd, size)
+                if data and not swapped:
+                    swapped = True
+                    parent.rename(root / "packages.detached")
+                    replacement.rename(parent)
+                return data
+
+            with PinnedReadRoot(root, label="staging") as evidence:
+                with mock.patch("syncapp.read_evidence.os.read", side_effect=swapping_read):
+                    with self.assertRaisesRegex(ReadEvidenceError, "parent packages was replaced"):
+                        evidence.sha256("packages/config.yaml")
+
+            self.assertEqual((parent / "config.yaml").read_text(), "same: true\n")
+            self.assertEqual(
+                (root / "packages.detached" / "config.yaml").read_text(),
+                "same: true\n",
+            )
+
     def test_refuses_byte_identical_leaf_replacement_during_hash(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "root"

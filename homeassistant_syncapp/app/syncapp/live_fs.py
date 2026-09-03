@@ -327,6 +327,7 @@ class LiveFilesystem:
                 raise LiveFilesystemError(
                     f"rollback snapshot file changed while being captured: {relative}"
                 )
+            os.fsync(current)
 
             for parent_fd, name, expected_identity in directory_links:
                 try:

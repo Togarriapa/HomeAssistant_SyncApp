@@ -191,6 +191,11 @@ class TransactionEvidenceRoot:
             raise TransactionEvidenceError("transaction evidence root is not open")
         return self._fd, self._identity
 
+    def root_identity(self) -> tuple[int, int]:
+        """Return the identity of the transaction root opened for evidence validation."""
+        _, identity = self._require_open()
+        return identity
+
     def assert_path_identity(self) -> None:
         _, identity = self._require_open()
         try:

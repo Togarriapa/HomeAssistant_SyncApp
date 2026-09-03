@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .policy import is_allowed_relative
 
@@ -128,7 +128,12 @@ def _snapshot_hashes(snapshot_dir: Path) -> dict[str, str]:
     return found
 
 
-def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
+def validate_journal_payload(
+    data: object,
+    snapshot_dir: Path,
+    *,
+    snapshot_hash_provider: Callable[[], dict[str, str]] | None = None,
+) -> JournalRecord:
     if not isinstance(data, dict):
         raise JournalIntegrityError("transaction journal must contain a JSON object")
 
@@ -199,7 +204,20 @@ def validate_journal_payload(data: object, snapshot_dir: Path) -> JournalRecord:
         )
 
     if state in _STATES_REQUIRING_COMPLETE_SNAPSHOT:
-        actual_snapshot_hashes = _snapshot_hashes(snapshot_dir)
+        actual_snapshot_hashes = (
+            snapshot_hash_provider()
+            if snapshot_hash_provider is not None
+            else _snapshot_hashes(snapshot_dir)
+        )
+        for relative, digest in actual_snapshot_hashes.items():
+            if not is_allowed_relative(relative):
+                raise JournalIntegrityError(
+                    f"transaction snapshot contains blocked or unsafe path: {relative}"
+                )
+            if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+                raise JournalIntegrityError(
+                    f"transaction snapshot produced an invalid SHA-256 digest for {relative}"
+                )
         if set(actual_snapshot_hashes) != set(existed):
             missing = sorted(set(existed) - set(actual_snapshot_hashes))
             unexpected = sorted(set(actual_snapshot_hashes) - set(existed))

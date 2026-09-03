@@ -400,18 +400,23 @@ class FileTransaction:
             raise TransactionError("rollback snapshot root was replaced after validation")
 
     def assert_snapshot_unchanged(self) -> None:
-        self._assert_snapshot_root_identity()
-        if not self.snapshot_sha256:
-            return
+        from .read_evidence import PinnedReadRoot, ReadEvidenceError
+
         if set(self.snapshot_sha256) != self.existed:
             raise TransactionError("transaction journal is missing rollback snapshot hashes")
-        for relative, expected in self.snapshot_sha256.items():
-            backup = self.snapshot_dir / relative
-            if backup.is_symlink() or not backup.is_file():
-                raise TransactionError(f"rollback snapshot disappeared or changed type: {relative}")
-            if _sha256_file(backup) != expected:
-                raise TransactionError(f"rollback snapshot changed after preparation: {relative}")
-        self._assert_snapshot_root_identity()
+        try:
+            with PinnedReadRoot(
+                self.snapshot_dir,
+                expected_identity=self.snapshot_root_identity,
+                label="rollback snapshot",
+            ) as evidence:
+                for relative, expected in self.snapshot_sha256.items():
+                    if evidence.sha256(relative) != expected:
+                        raise TransactionError(
+                            f"rollback snapshot changed after preparation: {relative}"
+                        )
+        except ReadEvidenceError as exc:
+            raise TransactionError(f"rollback snapshot integrity check failed safely: {exc}") from exc
 
     def assert_live_unchanged(self) -> None:
         self.assert_snapshot_unchanged()
@@ -422,10 +427,9 @@ class FileTransaction:
                 if relative in self.existed:
                     expected = self.snapshot_sha256.get(relative)
                     if expected is None:
-                        snapshot = self.snapshot_dir / relative
-                        if not snapshot.is_file():
-                            raise TransactionError(f"snapshot missing for {relative}")
-                        expected = _sha256_file(snapshot)
+                        raise TransactionError(
+                            f"transaction journal is missing rollback snapshot hash for {relative}"
+                        )
                     if not exists or live_fs.sha256(relative) != expected:
                         raise TransactionError(
                             f"live configuration changed during transaction preparation: {relative}"
@@ -438,17 +442,24 @@ class FileTransaction:
                 raise _as_transaction_error(exc) from exc
 
     def assert_staging_unchanged(self) -> None:
+        from .read_evidence import PinnedReadRoot, ReadEvidenceError
+
         expected = self.plan.write_hashes
         if set(expected) != set(self.plan.write_paths):
             raise TransactionError("transaction journal is missing staged-content hashes")
-        for relative in self.plan.write_paths:
-            source = self.staging_dir / relative
-            if source.is_symlink() or not source.is_file():
-                raise TransactionError(f"staged source disappeared or changed type: {relative}")
-            if _sha256_file(source) != expected[relative]:
-                raise TransactionError(
-                    f"staged configuration changed during transaction preparation: {relative}"
-                )
+        try:
+            with PinnedReadRoot(
+                self.staging_dir,
+                expected_identity=self.staging_root_identity,
+                label="staging",
+            ) as evidence:
+                for relative in self.plan.write_paths:
+                    if evidence.sha256(relative) != expected[relative]:
+                        raise TransactionError(
+                            f"staged configuration changed during transaction preparation: {relative}"
+                        )
+        except ReadEvidenceError as exc:
+            raise TransactionError(f"staged configuration integrity check failed safely: {exc}") from exc
 
     def apply(self) -> None:
         if self.state != "backed_up":
@@ -483,13 +494,11 @@ class FileTransaction:
             try:
                 if relative in self.existed:
                     backup = self.snapshot_dir / relative
-                    if not backup.is_file():
-                        raise TransactionError(f"snapshot missing for {relative}")
                     expected = self.snapshot_sha256.get(relative)
                     if expected is None:
-                        expected = _sha256_file(backup)
-                    elif _sha256_file(backup) != expected:
-                        raise TransactionError(f"rollback snapshot changed before restore: {relative}")
+                        raise TransactionError(
+                            f"transaction journal is missing rollback snapshot hash for {relative}"
+                        )
                     live_fs.replace_from(
                         relative,
                         backup,

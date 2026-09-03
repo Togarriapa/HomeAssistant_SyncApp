@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 from typing import Protocol
 
 from .journal_integrity import (
@@ -70,6 +71,16 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _directory_path_identity(path: Path) -> tuple[int, int]:
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise TransactionError(f"cannot inspect rollback snapshot root safely: {exc}") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise TransactionError("rollback snapshot root is not a directory")
+    return info.st_dev, info.st_ino
 
 
 def _pin_staged_content(staging_dir: Path, plan: ApplyPlan) -> ApplyPlan:
@@ -142,6 +153,7 @@ class FileTransaction:
         plan: ApplyPlan,
         *,
         staging_root_identity: tuple[int, int] | None = None,
+        snapshot_root_identity: tuple[int, int] | None = None,
     ):
         self.root = root
         self.source_dir = source_dir
@@ -149,6 +161,7 @@ class FileTransaction:
         self.plan = plan
         self.staging_root_identity = staging_root_identity
         self.snapshot_dir = root / self.SNAPSHOT
+        self.snapshot_root_identity = snapshot_root_identity
         self.journal_path = root / self.JOURNAL
         self.existed: set[str] = set()
         self.snapshot_sha256: dict[str, str] = {}
@@ -193,6 +206,7 @@ class FileTransaction:
         try:
             tx._write_journal("preparing")
             tx.snapshot_dir.mkdir()
+            tx.snapshot_root_identity = _directory_path_identity(tx.snapshot_dir)
             _fsync_directory(tx.root)
             for relative in sorted(existed):
                 backup = tx.snapshot_dir / relative
@@ -201,6 +215,7 @@ class FileTransaction:
                 except LiveFilesystemError as exc:
                     raise _as_transaction_error(exc) from exc
                 _fsync_directory(backup.parent)
+            tx._assert_snapshot_root_identity()
             tx._write_journal("prepared")
         except Exception:
             shutil.rmtree(root, ignore_errors=True)
@@ -275,7 +290,14 @@ class FileTransaction:
     def mark(self, state: str) -> None:
         self._write_journal(state)
 
+    def _assert_snapshot_root_identity(self) -> None:
+        if self.snapshot_root_identity is None:
+            return
+        if _directory_path_identity(self.snapshot_dir) != self.snapshot_root_identity:
+            raise TransactionError("rollback snapshot root was replaced after validation")
+
     def assert_snapshot_unchanged(self) -> None:
+        self._assert_snapshot_root_identity()
         if not self.snapshot_sha256:
             return
         if set(self.snapshot_sha256) != self.existed:
@@ -286,6 +308,7 @@ class FileTransaction:
                 raise TransactionError(f"rollback snapshot disappeared or changed type: {relative}")
             if _sha256_file(backup) != expected:
                 raise TransactionError(f"rollback snapshot changed after preparation: {relative}")
+        self._assert_snapshot_root_identity()
 
     def assert_live_unchanged(self) -> None:
         self.assert_snapshot_unchanged()
@@ -364,7 +387,12 @@ class FileTransaction:
                         expected = _sha256_file(backup)
                     elif _sha256_file(backup) != expected:
                         raise TransactionError(f"rollback snapshot changed before restore: {relative}")
-                    live_fs.replace_from(relative, backup, expected)
+                    live_fs.replace_from(
+                        relative,
+                        backup,
+                        expected,
+                        expected_source_root_identity=self.snapshot_root_identity,
+                    )
                 else:
                     live_fs.delete(relative)
             except Exception as exc:

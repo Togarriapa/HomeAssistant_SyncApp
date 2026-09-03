@@ -34,13 +34,19 @@ def load_active_transaction(
                 raise TransactionError(f"invalid recovery journal JSON: {exc}") from exc
 
             try:
-                record = validate_journal_payload(data, root / FileTransaction.SNAPSHOT)
+                record = validate_journal_payload(
+                    data,
+                    root / FileTransaction.SNAPSHOT,
+                    snapshot_hash_provider=lambda: evidence.snapshot_hashes(
+                        FileTransaction.SNAPSHOT
+                    ),
+                )
             except JournalIntegrityError as exc:
                 raise TransactionError(f"invalid recovery journal: {exc}") from exc
 
-            # Snapshot validation above still traverses the transaction pathname. Keep
-            # the originally opened root descriptor alive across that work and refuse
-            # to interpret the result if the pathname was replaced during validation.
+            # Journal and rollback snapshot validation are bound to the opened
+            # transaction-root descriptor. Refuse to interpret the resulting record
+            # if the pathname itself was replaced while that evidence was inspected.
             evidence.assert_path_identity()
 
             plan = ApplyPlan(

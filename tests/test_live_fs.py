@@ -58,15 +58,21 @@ class LiveFilesystemTests(unittest.TestCase):
             live.mkdir()
             target = live / "configuration.yaml"
             target.write_text("old: true\n", encoding="utf-8")
-            real_copyfileobj = __import__("shutil").copyfileobj
+            real_read = os.read
+            mutated = False
 
-            def copy_then_mutate(source_handle, target_handle, length=0):
-                real_copyfileobj(source_handle, target_handle, length=length)
-                target.write_text("changed: true\n", encoding="utf-8")
+            def read_then_mutate(fd, size):
+                nonlocal mutated
+                chunk = real_read(fd, size)
+                if not chunk and not mutated:
+                    target.write_text("changed: true\n", encoding="utf-8")
+                    mutated = True
+                return chunk
 
-            with mock.patch("syncapp.live_fs.shutil.copyfileobj", side_effect=copy_then_mutate):
+            with mock.patch("syncapp.live_fs.os.read", side_effect=read_then_mutate):
                 with self.assertRaisesRegex(LiveFilesystemError, "changed while rollback snapshot"):
                     LiveFilesystem(live).copy_to("configuration.yaml", snapshot)
+            self.assertTrue(mutated)
 
     def test_replace_refuses_preexisting_transaction_temp_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:

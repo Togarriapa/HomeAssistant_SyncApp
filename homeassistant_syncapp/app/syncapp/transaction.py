@@ -154,6 +154,7 @@ class FileTransaction:
         *,
         staging_root_identity: tuple[int, int] | None = None,
         snapshot_root_identity: tuple[int, int] | None = None,
+        transaction_root_identity: tuple[int, int] | None = None,
     ):
         self.root = root
         self.source_dir = source_dir
@@ -162,6 +163,7 @@ class FileTransaction:
         self.staging_root_identity = staging_root_identity
         self.snapshot_dir = root / self.SNAPSHOT
         self.snapshot_root_identity = snapshot_root_identity
+        self.transaction_root_identity = transaction_root_identity
         self.journal_path = root / self.JOURNAL
         self.existed: set[str] = set()
         self.snapshot_sha256: dict[str, str] = {}
@@ -195,12 +197,14 @@ class FileTransaction:
 
         root.mkdir(parents=True, exist_ok=False)
         _fsync_directory(root.parent)
+        root_identity = _directory_path_identity(root)
         tx = cls(
             root,
             source_dir,
             staging_dir,
             plan,
             staging_root_identity=staging_root_identity,
+            transaction_root_identity=root_identity,
         )
         tx.existed = existed
         try:
@@ -218,7 +222,10 @@ class FileTransaction:
             tx._assert_snapshot_root_identity()
             tx._write_journal("prepared")
         except Exception:
-            shutil.rmtree(root, ignore_errors=True)
+            try:
+                tx.discard()
+            except Exception:
+                pass
             raise
         return tx
 
@@ -249,7 +256,13 @@ class FileTransaction:
                 delete_paths=record.delete_paths,
                 write_sha256=record.write_sha256,
             )
-            tx = cls(root, source_dir, staging_dir, plan)
+            tx = cls(
+                root,
+                source_dir,
+                staging_dir,
+                plan,
+                transaction_root_identity=_directory_path_identity(root),
+            )
             tx.existed = set(record.existed)
             tx.snapshot_sha256 = dict(record.snapshot_sha256)
             tx.supervisor_backup = record.supervisor_backup
@@ -260,8 +273,51 @@ class FileTransaction:
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise TransactionError(f"invalid recovery journal: {exc}") from exc
 
+    def _open_transaction_root(self) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(self.root, flags)
+        except OSError as exc:
+            raise TransactionError(
+                f"cannot open transaction root safely for journal update: {exc}"
+            ) from exc
+        info = os.fstat(fd)
+        identity = (info.st_dev, info.st_ino)
+        if not stat.S_ISDIR(info.st_mode) or (
+            self.transaction_root_identity is not None
+            and identity != self.transaction_root_identity
+        ):
+            os.close(fd)
+            raise TransactionError(
+                "transaction root no longer identifies the validated transaction evidence"
+            )
+        if self.transaction_root_identity is None:
+            self.transaction_root_identity = identity
+        return fd
+
+    def _assert_transaction_root_path_identity(self, root_fd: int | None = None) -> None:
+        close_fd = root_fd is None
+        fd = self._open_transaction_root() if root_fd is None else root_fd
+        try:
+            opened = os.fstat(fd)
+            try:
+                current = os.stat(self.root, follow_symlinks=False)
+            except OSError as exc:
+                raise TransactionError(
+                    f"transaction root pathname disappeared during journal update: {exc}"
+                ) from exc
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+            ):
+                raise TransactionError(
+                    "transaction root pathname was replaced during journal update"
+                )
+        finally:
+            if close_fd:
+                os.close(fd)
+
     def _write_journal(self, state: str) -> None:
-        self.state = state
         payload = attach_journal_digest(
             {
                 "version": 2,
@@ -275,13 +331,52 @@ class FileTransaction:
                 "supervisor_backup": self.supervisor_backup,
             }
         )
-        temporary = self.journal_path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.journal_path)
-        _fsync_directory(self.root)
+        encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        root_fd = self._open_transaction_root()
+        temporary = self.JOURNAL + ".tmp"
+        temp_fd: int | None = None
+        owned_temporary = False
+        try:
+            self._assert_transaction_root_path_identity(root_fd)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                temp_fd = os.open(temporary, flags, 0o600, dir_fd=root_fd)
+                owned_temporary = True
+            except FileExistsError as exc:
+                raise TransactionError(
+                    "refusing pre-existing transaction journal temporary file"
+                ) from exc
+            except OSError as exc:
+                raise TransactionError(
+                    f"cannot create transaction journal temporary file safely: {exc}"
+                ) from exc
+            view = memoryview(encoded)
+            while view:
+                written = os.write(temp_fd, view)
+                view = view[written:]
+            os.fsync(temp_fd)
+            os.close(temp_fd)
+            temp_fd = None
+            self._assert_transaction_root_path_identity(root_fd)
+            os.replace(
+                temporary,
+                self.JOURNAL,
+                src_dir_fd=root_fd,
+                dst_dir_fd=root_fd,
+            )
+            owned_temporary = False
+            os.fsync(root_fd)
+            self._assert_transaction_root_path_identity(root_fd)
+            self.state = state
+        finally:
+            if temp_fd is not None:
+                os.close(temp_fd)
+            if owned_temporary:
+                try:
+                    os.unlink(temporary, dir_fd=root_fd)
+                except FileNotFoundError:
+                    pass
+            os.close(root_fd)
 
     def record_supervisor_backup(self, identifier: str) -> None:
         self.supervisor_backup = identifier
@@ -405,6 +500,7 @@ class FileTransaction:
             self.discard()
 
     def discard(self) -> None:
+        self._assert_transaction_root_path_identity()
         parent = self.root.parent
         shutil.rmtree(self.root, ignore_errors=False)
         _fsync_directory(parent)

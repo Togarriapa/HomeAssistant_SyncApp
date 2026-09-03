@@ -96,7 +96,10 @@ class PinnedReadRootTests(unittest.TestCase):
 
             with PinnedReadRoot(root, label="rollback snapshot") as evidence:
                 with mock.patch("syncapp.read_evidence.os.read", side_effect=swapping_read):
-                    with self.assertRaisesRegex(ReadEvidenceError, "file config.yaml was replaced"):
+                    with self.assertRaisesRegex(
+                        ReadEvidenceError,
+                        r"file config\.yaml (changed while being read|was replaced while being read)",
+                    ):
                         evidence.sha256("config.yaml")
 
     def test_refuses_unsafe_relative_paths(self):

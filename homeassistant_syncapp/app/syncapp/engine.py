@@ -124,7 +124,7 @@ class SyncEngine:
             "Managed branch is %s; revalidated its single unpushed commit against live Home Assistant configuration",
             relationship,
         )
-        self.repository.push()
+        self.repository.push(head)
         try:
             save_manifest(
                 self.settings.manifest_path,
@@ -363,7 +363,7 @@ class SyncEngine:
             LOGGER.error("Refusing to push newly created local commit: %s", exc)
             return
 
-        self.repository.push()
+        self.repository.push(commit)
         try:
             save_manifest(self.settings.manifest_path, current_managed)
         except ManifestError as exc:

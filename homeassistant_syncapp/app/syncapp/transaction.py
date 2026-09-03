@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 from typing import Protocol
 
@@ -16,6 +15,7 @@ from .journal_integrity import (
 )
 from .live_fs import LiveFilesystem, LiveFilesystemError
 from .policy import is_allowed_relative
+from .transaction_cleanup import TransactionCleanupError, remove_transaction_tree
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,10 +508,12 @@ class FileTransaction:
             self.discard()
 
     def discard(self) -> None:
-        self._assert_transaction_root_path_identity()
-        parent = self.root.parent
-        shutil.rmtree(self.root, ignore_errors=False)
-        _fsync_directory(parent)
+        if self.transaction_root_identity is None:
+            raise TransactionError("transaction root identity is unavailable for safe cleanup")
+        try:
+            remove_transaction_tree(self.root, self.transaction_root_identity)
+        except TransactionCleanupError as exc:
+            raise TransactionError(f"transaction cleanup failed safely: {exc}") from exc
 
     def complete(self) -> None:
         self._write_journal("completed")

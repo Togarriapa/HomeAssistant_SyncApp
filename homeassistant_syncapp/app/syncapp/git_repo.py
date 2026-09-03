@@ -263,6 +263,24 @@ class GitRepository:
             "merge-base", "--is-ancestor", older, newer, check=False
         ).returncode == 0
 
+    def unpushed_commit_count(self) -> int:
+        """Count commits that would be sent by a retry push from the managed branch."""
+        local = self.head()
+        if local is None:
+            return 0
+        remote = self.remote_head()
+        if remote is not None:
+            if not self._is_ancestor(remote, local):
+                raise GitError("cannot count unpushed commits from non-ancestor remote")
+            revision = f"{remote}..{local}"
+        else:
+            revision = local
+        raw = self._run("rev-list", "--count", revision).stdout.strip()
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise GitError(f"invalid unpushed commit count: {raw!r}") from exc
+
     def tree_entries(self, ref: str) -> list[GitTreeEntry]:
         raw = self._run_bytes("ls-tree", "-r", "-z", ref).stdout
         entries: list[GitTreeEntry] = []

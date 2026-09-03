@@ -9,7 +9,7 @@ from .apply import (
     recover_interrupted_apply,
 )
 from .config import Settings
-from .git_repo import GitError, GitRepository
+from .git_repo import GitError, GitRepository, GitTreeEntry
 from .mirror import ManifestError, load_manifest, mirror_local_configuration, save_manifest
 from .policy import is_allowed_relative
 from .staging import (
@@ -25,9 +25,13 @@ LOGGER = logging.getLogger(__name__)
 _ALLOWED_INDEX_MODES = {"100644", "100755"}
 
 
-def _index_sha256_manifest(repository: GitRepository) -> tuple[tuple[str, str], ...]:
+def _entries_sha256_manifest(
+    repository: GitRepository,
+    entries: list[GitTreeEntry],
+    *,
+    label: str,
+) -> tuple[tuple[str, str], ...]:
     try:
-        entries = repository.index_tree_entries()
         manifest: list[tuple[str, str]] = []
         for entry in entries:
             if (
@@ -36,14 +40,33 @@ def _index_sha256_manifest(repository: GitRepository) -> tuple[tuple[str, str], 
                 or not is_allowed_relative(entry.path)
             ):
                 raise StagingValidationError(
-                    f"staged Git index contains unsupported or blocked entry: {entry.path}"
+                    f"{label} contains unsupported or blocked entry: {entry.path}"
                 )
             manifest.append(
                 (entry.path, hashlib.sha256(repository.read_blob(entry.object_id)).hexdigest())
             )
         return tuple(sorted(manifest))
     except GitError as exc:
+        raise StagingValidationError(f"could not bind {label}: {exc}") from exc
+
+
+def _index_sha256_manifest(repository: GitRepository) -> tuple[tuple[str, str], ...]:
+    try:
+        entries = repository.index_tree_entries()
+    except GitError as exc:
         raise StagingValidationError(f"could not bind staged Git index: {exc}") from exc
+    return _entries_sha256_manifest(repository, entries, label="staged Git index")
+
+
+def _commit_sha256_manifest(
+    repository: GitRepository,
+    commit: str,
+) -> tuple[tuple[str, str], ...]:
+    try:
+        entries = repository.tree_entries(commit)
+    except GitError as exc:
+        raise StagingValidationError(f"could not inspect unpushed commit: {exc}") from exc
+    return _entries_sha256_manifest(repository, entries, label="unpushed Git commit")
 
 
 class SyncEngine:
@@ -57,6 +80,63 @@ class SyncEngine:
             user_name=settings.git_user_name,
             user_email=settings.git_user_email,
         )
+
+    def _retry_unpushed_commit(self, relationship: str) -> None:
+        if self.settings.dry_run:
+            LOGGER.warning(
+                "Managed branch has an unpushed commit, but dry-run is enabled; push skipped"
+            )
+            return
+
+        try:
+            count = self.repository.unpushed_commit_count()
+            if count != 1:
+                raise StagingValidationError(
+                    f"refusing retry because managed branch has {count} unpushed commits; expected exactly one SyncApp commit"
+                )
+            head = self.repository.head()
+            if head is None:
+                raise StagingValidationError("managed branch has no HEAD for unpushed retry")
+
+            committed = _commit_sha256_manifest(self.repository, head)
+            live_before = validate_configuration_directory(self.settings.source_dir)
+            if live_before.file_sha256 != committed:
+                raise StagingValidationError(
+                    "unpushed commit no longer matches live configuration before semantic validation"
+                )
+
+            SupervisorClient().check_core_configuration()
+
+            live_after = validate_configuration_directory(self.settings.source_dir)
+            if live_after.file_sha256 != committed:
+                raise StagingValidationError(
+                    "live configuration changed during unpushed-commit semantic validation"
+                )
+        except (GitError, StagingValidationError, SupervisorError) as exc:
+            LOGGER.error(
+                "Refusing automatic push retry for %s state: %s",
+                relationship,
+                exc,
+            )
+            return
+
+        LOGGER.warning(
+            "Managed branch is %s; revalidated its single unpushed commit against live Home Assistant configuration",
+            relationship,
+        )
+        self.repository.push()
+        try:
+            save_manifest(
+                self.settings.manifest_path,
+                {path for path, _digest in committed},
+            )
+        except ManifestError as exc:
+            LOGGER.error(
+                "Unpushed commit was sent successfully, but managed-path manifest persistence failed: %s",
+                exc,
+            )
+            return
+        LOGGER.info("Previously committed local changes were revalidated and pushed successfully")
 
     def run_once(self) -> None:
         # A crash during a previous apply is resolved before any new Git activity.
@@ -75,15 +155,8 @@ class SyncEngine:
             )
             return
 
-        if relationship == "local_ahead":
-            if self.settings.dry_run:
-                LOGGER.warning(
-                    "Local branch is ahead of GitHub, but dry-run is enabled; push skipped"
-                )
-                return
-            LOGGER.warning("Local branch is ahead of GitHub; retrying previous push")
-            self.repository.push()
-            LOGGER.info("Previously committed local changes were pushed successfully")
+        if relationship in {"local_ahead", "local_only"}:
+            self._retry_unpushed_commit(relationship)
             return
 
         # A missing manifest means SyncApp has not yet established a managed baseline.

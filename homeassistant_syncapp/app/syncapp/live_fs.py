@@ -5,7 +5,6 @@ import errno
 import hashlib
 import os
 from pathlib import Path
-import shutil
 import stat
 from typing import Iterator
 
@@ -25,14 +24,6 @@ def _sha256_fd(fd: int) -> str:
             break
         digest.update(chunk)
     os.lseek(fd, 0, os.SEEK_SET)
-    return digest.hexdigest()
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -230,6 +221,148 @@ class LiveFilesystem:
             for descriptor in reversed(directory_fds):
                 os.close(descriptor)
 
+    @contextmanager
+    def _open_snapshot_destination(
+        self,
+        relative: str,
+        destination: Path,
+        expected_root_identity: tuple[int, int] | None = None,
+    ) -> Iterator[int]:
+        """Create a rollback snapshot leaf beneath stable descriptor-relative destination evidence."""
+        relative_parts = self._parts(relative)
+        destination = Path(destination)
+        destination_parts = tuple(destination.parts)
+        if (
+            len(destination_parts) >= len(relative_parts)
+            and destination_parts[-len(relative_parts) :] == relative_parts
+        ):
+            destination_root = destination
+            for _ in relative_parts:
+                destination_root = destination_root.parent
+            traversal_parts = relative_parts
+        else:
+            destination_root = destination.parent
+            traversal_parts = (destination.name,)
+
+        directory_flags = (
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        directory_fds: list[int] = []
+        directory_links: list[tuple[int, str, tuple[int, int, int]]] = []
+        target_fd: int | None = None
+        target_created = False
+        leaf = traversal_parts[-1]
+        current = -1
+        try:
+            try:
+                root_fd = os.open(destination_root, directory_flags)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"cannot open rollback snapshot root safely: {relative}: {exc}"
+                ) from exc
+            directory_fds.append(root_fd)
+            root_info = os.fstat(root_fd)
+            if not stat.S_ISDIR(root_info.st_mode):
+                raise LiveFilesystemError(f"rollback snapshot root is not a directory: {relative}")
+            root_identity = _directory_identity(root_info)
+            if expected_root_identity is not None and root_identity[:2] != expected_root_identity:
+                raise LiveFilesystemError(
+                    f"rollback snapshot root no longer identifies prepared evidence: {relative}"
+                )
+
+            current = root_fd
+            for part in traversal_parts[:-1]:
+                child: int | None = None
+                try:
+                    try:
+                        child = os.open(part, directory_flags, dir_fd=current)
+                    except FileNotFoundError:
+                        os.mkdir(part, mode=0o755, dir_fd=current)
+                        os.fsync(current)
+                        child = os.open(part, directory_flags, dir_fd=current)
+                    child_info = os.fstat(child)
+                    entry_info = os.stat(part, dir_fd=current, follow_symlinks=False)
+                except OSError as exc:
+                    if child is not None:
+                        os.close(child)
+                    raise LiveFilesystemError(
+                        f"refusing unsafe rollback snapshot parent: {relative}: {exc}"
+                    ) from exc
+                if not stat.S_ISDIR(child_info.st_mode) or _directory_identity(entry_info) != _directory_identity(
+                    child_info
+                ):
+                    os.close(child)
+                    raise LiveFilesystemError(
+                        f"rollback snapshot parent changed while opening: {relative}"
+                    )
+                directory_links.append((current, part, _directory_identity(child_info)))
+                directory_fds.append(child)
+                current = child
+
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                target_fd = os.open(leaf, flags, 0o600, dir_fd=current)
+                target_created = True
+            except FileExistsError as exc:
+                raise LiveFilesystemError(
+                    f"refusing pre-existing rollback snapshot file: {relative}"
+                ) from exc
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"cannot create rollback snapshot file safely: {relative}: {exc}"
+                ) from exc
+
+            yield target_fd
+
+            target_info = os.fstat(target_fd)
+            try:
+                target_entry = os.stat(leaf, dir_fd=current, follow_symlinks=False)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"rollback snapshot file disappeared after capture: {relative}: {exc}"
+                ) from exc
+            if not stat.S_ISREG(target_info.st_mode) or _file_identity(target_entry) != _file_identity(
+                target_info
+            ):
+                raise LiveFilesystemError(
+                    f"rollback snapshot file changed while being captured: {relative}"
+                )
+
+            for parent_fd, name, expected_identity in directory_links:
+                try:
+                    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise LiveFilesystemError(
+                        f"rollback snapshot parent disappeared after capture: {relative}: {exc}"
+                    ) from exc
+                if _directory_identity(entry) != expected_identity:
+                    raise LiveFilesystemError(
+                        f"rollback snapshot parent changed while being captured: {relative}"
+                    )
+
+            try:
+                final_root = os.stat(destination_root, follow_symlinks=False)
+            except OSError as exc:
+                raise LiveFilesystemError(
+                    f"rollback snapshot root disappeared after capture: {relative}: {exc}"
+                ) from exc
+            if _directory_identity(final_root) != root_identity:
+                raise LiveFilesystemError(
+                    f"rollback snapshot root changed while being captured: {relative}"
+                )
+            target_created = False
+        finally:
+            if target_fd is not None:
+                os.close(target_fd)
+            if target_created and current >= 0:
+                try:
+                    os.unlink(leaf, dir_fd=current)
+                    os.fsync(current)
+                except FileNotFoundError:
+                    pass
+            for descriptor in reversed(directory_fds):
+                os.close(descriptor)
+
     def exists_regular(self, relative: str) -> bool:
         try:
             with self._open_parent(relative) as (parent_fd, leaf):
@@ -264,7 +397,13 @@ class LiveFilesystem:
             finally:
                 os.close(fd)
 
-    def copy_to(self, relative: str, destination: Path) -> str:
+    def copy_to(
+        self,
+        relative: str,
+        destination: Path,
+        *,
+        expected_destination_root_identity: tuple[int, int] | None = None,
+    ) -> str:
         with self._open_parent(relative) as (parent_fd, leaf):
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             try:
@@ -277,13 +416,25 @@ class LiveFilesystem:
                 info = os.fstat(source_fd)
                 if not stat.S_ISREG(info.st_mode):
                     raise LiveFilesystemError(f"live target is not a regular file: {relative}")
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with os.fdopen(os.dup(source_fd), "rb") as source_handle, destination.open("xb") as target:
-                    shutil.copyfileobj(source_handle, target, length=1024 * 1024)
-                    os.fchmod(target.fileno(), stat.S_IMODE(info.st_mode))
-                    target.flush()
-                    os.fsync(target.fileno())
-                snapshot_digest = _sha256_path(destination)
+                digest = hashlib.sha256()
+                with self._open_snapshot_destination(
+                    relative,
+                    destination,
+                    expected_destination_root_identity,
+                ) as target_fd:
+                    os.lseek(source_fd, 0, os.SEEK_SET)
+                    while True:
+                        chunk = os.read(source_fd, 1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        view = memoryview(chunk)
+                        while view:
+                            written = os.write(target_fd, view)
+                            view = view[written:]
+                    os.fchmod(target_fd, stat.S_IMODE(info.st_mode))
+                    os.fsync(target_fd)
+                snapshot_digest = digest.hexdigest()
                 if _sha256_fd(source_fd) != snapshot_digest:
                     raise LiveFilesystemError(
                         f"live configuration changed while rollback snapshot was being captured: {relative}"

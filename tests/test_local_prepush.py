@@ -33,6 +33,20 @@ class FakeSupervisor:
         return {}
 
 
+class MutatingSupervisor(FakeSupervisor):
+    def __init__(self, live_file: Path) -> None:
+        super().__init__()
+        self.live_file = live_file
+
+    def check_core_configuration(self) -> dict:
+        result = super().check_core_configuration()
+        self.live_file.write_text(
+            "homeassistant:\n  name: ChangedDuringCheck\n",
+            encoding="utf-8",
+        )
+        return result
+
+
 class LocalPrepushTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -95,6 +109,24 @@ class LocalPrepushTests(unittest.TestCase):
         remote_head = git(self.remote, "rev-parse", "refs/heads/main")
         self.assertTrue(remote_head)
         self.assertEqual(engine.repository.relationship(), "equal")
+
+    def test_live_change_during_semantic_validation_blocks_commit_and_push(self) -> None:
+        live_file = self.live / "configuration.yaml"
+        live_file.write_text("homeassistant:\n  name: Original\n", encoding="utf-8")
+        supervisor = MutatingSupervisor(live_file)
+        engine = self._engine()
+
+        with patch("syncapp.engine.SupervisorClient", return_value=supervisor):
+            engine.run_once()
+
+        self.assertEqual(supervisor.checks, 1)
+        self.assertIsNone(engine.repository.head())
+        self.assertIsNone(engine.repository.remote_head())
+        self.assertEqual(engine.repository.staged_paths(), [])
+        self.assertEqual(
+            live_file.read_text(encoding="utf-8"),
+            "homeassistant:\n  name: ChangedDuringCheck\n",
+        )
 
     def test_invalid_yaml_is_not_committed_or_pushed(self) -> None:
         (self.live / "configuration.yaml").write_text("broken: [\n", encoding="utf-8")

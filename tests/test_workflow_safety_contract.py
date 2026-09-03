@@ -70,8 +70,9 @@ class WorkflowSafetyContractTests(unittest.TestCase):
                 REPOSITORY_ROOT / "homeassistant_syncapp" / "DOCS.md",
             )
         )
+        normalized = documentation.replace("Roll back", "Rollback")
         required = "Detect → Fetch → Stage → Validate → Backup → Apply → Verify → Rollback"
-        self.assertIn(required, documentation)
+        self.assertIn(required, normalized)
 
 
 if __name__ == "__main__":

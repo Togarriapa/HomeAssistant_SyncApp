@@ -47,6 +47,21 @@ class MutatingSupervisor(FakeSupervisor):
         return result
 
 
+class IndexMutatingSupervisor(FakeSupervisor):
+    def __init__(self, repository_file: Path) -> None:
+        super().__init__()
+        self.repository_file = repository_file
+
+    def check_core_configuration(self) -> dict:
+        result = super().check_core_configuration()
+        self.repository_file.write_text(
+            "homeassistant:\n  name: IndexInjected\n",
+            encoding="utf-8",
+        )
+        git(self.repository_file.parent, "add", "-A")
+        return result
+
+
 class LocalPrepushTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -126,6 +141,25 @@ class LocalPrepushTests(unittest.TestCase):
         self.assertEqual(
             live_file.read_text(encoding="utf-8"),
             "homeassistant:\n  name: ChangedDuringCheck\n",
+        )
+
+    def test_staged_index_change_during_semantic_validation_blocks_push(self) -> None:
+        live_file = self.live / "configuration.yaml"
+        live_file.write_text("homeassistant:\n  name: Original\n", encoding="utf-8")
+        repository_file = self.repository_dir / "configuration.yaml"
+        supervisor = IndexMutatingSupervisor(repository_file)
+        engine = self._engine()
+
+        with patch("syncapp.engine.SupervisorClient", return_value=supervisor):
+            engine.run_once()
+
+        self.assertEqual(supervisor.checks, 1)
+        self.assertIsNone(engine.repository.head())
+        self.assertIsNone(engine.repository.remote_head())
+        self.assertEqual(engine.repository.staged_paths(), [])
+        self.assertEqual(
+            live_file.read_text(encoding="utf-8"),
+            "homeassistant:\n  name: Original\n",
         )
 
     def test_invalid_yaml_is_not_committed_or_pushed(self) -> None:

@@ -51,6 +51,11 @@ class StagingFilesystem:
             raise StagingFilesystemError("staging filesystem is not open")
         return self._root_fd, self._root_identity
 
+    def root_identity(self) -> tuple[int, int]:
+        """Return the device/inode identity of the staging tree opened for materialization."""
+        _, identity = self._require_open()
+        return identity
+
     @staticmethod
     def _parts(relative: str) -> tuple[str, ...]:
         if not is_allowed_relative(relative):

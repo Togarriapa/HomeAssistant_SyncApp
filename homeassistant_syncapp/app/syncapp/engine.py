@@ -351,6 +351,18 @@ class SyncEngine:
             return
 
         commit = self.repository.commit("chore(homeassistant): sync local configuration")
+        try:
+            if _commit_sha256_manifest(self.repository, commit) != validated.file_sha256:
+                raise StagingValidationError(
+                    "created Git commit does not match the fully validated local candidate"
+                )
+        except StagingValidationError as exc:
+            # HEAD now contains the suspect commit. Do not reset it automatically: the
+            # single-commit recovery path will also refuse to push it unless it can be
+            # independently revalidated against live Home Assistant configuration.
+            LOGGER.error("Refusing to push newly created local commit: %s", exc)
+            return
+
         self.repository.push()
         try:
             save_manifest(self.settings.manifest_path, current_managed)

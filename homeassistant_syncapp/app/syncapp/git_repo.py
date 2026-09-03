@@ -355,9 +355,15 @@ class GitRepository:
             raise GitError("commit completed without a HEAD")
         return head
 
-    def push(self) -> None:
+    def push(self, expected_commit: str | None = None) -> None:
         self._assert_remote_provenance()
-        self._run("push", "-u", "origin", f"HEAD:refs/heads/{self.branch}")
+        commit = expected_commit or self.head()
+        if not commit:
+            raise GitError("managed branch has no commit to push")
+        resolved = self._run("rev-parse", "--verify", f"{commit}^{{commit}}").stdout.strip()
+        if resolved != commit:
+            raise GitError("refusing push because expected commit did not resolve exactly")
+        self._run("push", "-u", "origin", f"{commit}:refs/heads/{self.branch}")
 
     def adopt_remote(self, expected_commit: str) -> None:
         remote = self.remote_head()

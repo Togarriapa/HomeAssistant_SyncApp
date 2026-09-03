@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shutil
 
-from .policy import collect_allowed_files, is_allowed_relative
+from .mirror_fs import MirrorFilesystem, MirrorFilesystemError
+from .policy import BLOCKED_DIR_NAMES, is_allowed_relative
+from .read_evidence import PinnedReadRoot, ReadEvidenceError
 
 
 class ManifestError(RuntimeError):
@@ -87,17 +88,32 @@ def mirror_local_configuration(
             + ", ".join(repr(item) for item in unsafe_previous)
         )
 
-    current = collect_allowed_files(source)
+    try:
+        with PinnedReadRoot(source, label="live configuration mirror") as evidence, MirrorFilesystem(
+            destination
+        ) as mirror:
+            current_tuple = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            current = set(current_tuple)
 
-    for relative in sorted(current):
-        src = source / relative
-        dst = destination / relative
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+            for relative in current_tuple:
+                mirror.replace_bytes(relative, evidence.read_bytes(relative))
 
-    for relative in sorted(previous_managed - current, reverse=True):
-        target = destination / relative
-        if target.is_file() or target.is_symlink():
-            target.unlink()
+            final_tuple = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            if final_tuple != current_tuple:
+                raise ManifestError("live configuration path set changed during local mirror")
+
+            for relative in sorted(previous_managed - current, reverse=True):
+                mirror.delete(relative)
+
+            evidence.assert_path_identity()
+            mirror.assert_path_identity()
+    except (ReadEvidenceError, MirrorFilesystemError) as exc:
+        raise ManifestError(f"local mirror confinement failed: {exc}") from exc
 
     return current

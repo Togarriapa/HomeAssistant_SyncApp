@@ -43,6 +43,35 @@ class ManifestDurabilityTests(unittest.TestCase):
             # was not proven so verified transaction evidence can be preserved/retried.
             self.assertTrue(path.exists())
 
+    def test_preexisting_temporary_symlink_cannot_redirect_manifest_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "managed_paths.json"
+            outside = root / "outside.yaml"
+            outside.write_text("must survive\n", encoding="utf-8")
+            temporary_path = path.with_suffix(".tmp")
+            temporary_path.symlink_to(outside)
+
+            with self.assertRaisesRegex(ManifestError, "pre-existing.*temporary"):
+                save_manifest(path, {"configuration.yaml"})
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), "must survive\n")
+            self.assertTrue(temporary_path.is_symlink())
+            self.assertFalse(path.exists())
+
+    def test_manifest_symlink_is_refused_without_reading_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "managed_paths.json"
+            outside = root / "outside.json"
+            outside.write_text('["configuration.yaml"]\n', encoding="utf-8")
+            path.symlink_to(outside)
+
+            with self.assertRaisesRegex(ManifestError, "opened safely"):
+                load_manifest(path)
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), '["configuration.yaml"]\n')
+
 
 if __name__ == "__main__":
     unittest.main()

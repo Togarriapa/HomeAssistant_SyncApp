@@ -48,6 +48,7 @@ def load_active_transaction(
             # transaction-root descriptor. Refuse to interpret the resulting record
             # if the pathname itself was replaced while that evidence was inspected.
             evidence.assert_path_identity()
+            transaction_root_identity = evidence.root_identity()
             snapshot_root_identity = evidence.validated_snapshot_identity()
 
             plan = ApplyPlan(
@@ -61,6 +62,7 @@ def load_active_transaction(
                 source_dir,
                 staging_dir,
                 plan,
+                transaction_root_identity=transaction_root_identity,
                 snapshot_root_identity=snapshot_root_identity,
             )
             transaction.existed = set(record.existed)

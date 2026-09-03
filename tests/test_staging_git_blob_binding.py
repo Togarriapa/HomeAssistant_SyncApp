@@ -43,9 +43,16 @@ class StagingGitBlobBindingTests(unittest.TestCase):
             marker = staging / "known-good.txt"
             marker.write_text("preserve", encoding="utf-8")
 
-            def substitute_before_validation(root: Path):
+            def substitute_before_validation(
+                root: Path,
+                *,
+                expected_root_identity: tuple[int, int] | None = None,
+            ):
                 (root / "configuration.yaml").write_bytes(tampered)
-                return original_validate(root)
+                return original_validate(
+                    root,
+                    expected_root_identity=expected_root_identity,
+                )
 
             with mock.patch.object(
                 staging_module,

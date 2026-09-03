@@ -58,8 +58,6 @@ class LiveFilesystem:
         self.root = root
 
     def _open_root(self) -> int:
-        # Keep the established operator-facing error explicit. This pre-check is
-        # diagnostic only; O_NOFOLLOW below remains the actual race-safe gate.
         if self.root.is_symlink():
             raise LiveFilesystemError("live configuration root must not be a symlink")
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -111,17 +109,12 @@ class LiveFilesystem:
 
     @contextmanager
     def _open_replacement_source(
-        self, relative: str, source: Path
+        self,
+        relative: str,
+        source: Path,
+        expected_root_identity: tuple[int, int] | None = None,
     ) -> Iterator[tuple[int, int]]:
-        """Pin replacement bytes to stable descriptor-relative source evidence.
-
-        Production FileTransaction sources are ``source_root / relative``; those
-        receive full root-to-leaf confinement. Direct callers that supply an
-        unrelated single source file retain compatibility while still receiving a
-        no-follow parent/root open, pinned regular-file descriptor, byte digest,
-        and stable directory-entry proof.
-        """
-
+        """Pin replacement bytes to stable descriptor-relative source evidence."""
         relative_parts = self._parts(relative)
         source = Path(source)
         source_parts = tuple(source.parts)
@@ -155,6 +148,10 @@ class LiveFilesystem:
             if not stat.S_ISDIR(root_info.st_mode):
                 raise LiveFilesystemError(f"replacement source root is not a directory: {relative}")
             root_identity = _directory_identity(root_info)
+            if expected_root_identity is not None and root_identity[:2] != expected_root_identity:
+                raise LiveFilesystemError(
+                    f"replacement source root no longer identifies validated evidence: {relative}"
+                )
 
             current = root_fd
             for part in traversal_parts[:-1]:
@@ -295,7 +292,14 @@ class LiveFilesystem:
             finally:
                 os.close(source_fd)
 
-    def replace_from(self, relative: str, source: Path, expected_sha256: str) -> None:
+    def replace_from(
+        self,
+        relative: str,
+        source: Path,
+        expected_sha256: str,
+        *,
+        expected_source_root_identity: tuple[int, int] | None = None,
+    ) -> None:
         with self._open_parent(relative, create=True) as (parent_fd, leaf):
             temporary = f".{leaf}.syncapp-new"
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -312,7 +316,11 @@ class LiveFilesystem:
                     ) from exc
                 try:
                     digest = hashlib.sha256()
-                    with self._open_replacement_source(relative, source) as (source_fd, source_mode):
+                    with self._open_replacement_source(
+                        relative,
+                        source,
+                        expected_source_root_identity,
+                    ) as (source_fd, source_mode):
                         os.lseek(source_fd, 0, os.SEEK_SET)
                         while True:
                             chunk = os.read(source_fd, 1024 * 1024)

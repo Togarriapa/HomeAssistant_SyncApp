@@ -156,6 +156,7 @@ class TransactionEvidenceRoot:
         self.root = root
         self._fd: int | None = None
         self._identity: tuple[int, int] | None = None
+        self._snapshot_identity: tuple[int, int] | None = None
 
     def __enter__(self) -> "TransactionEvidenceRoot":
         if self.root.is_symlink():
@@ -175,6 +176,7 @@ class TransactionEvidenceRoot:
             raise TransactionEvidenceError("transaction root is not a directory")
         self._fd = fd
         self._identity = (info.st_dev, info.st_ino)
+        self._snapshot_identity = None
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -182,6 +184,7 @@ class TransactionEvidenceRoot:
             os.close(self._fd)
         self._fd = None
         self._identity = None
+        self._snapshot_identity = None
 
     def _require_open(self) -> tuple[int, tuple[int, int]]:
         if self._fd is None or self._identity is None:
@@ -258,6 +261,7 @@ class TransactionEvidenceRoot:
 
     def snapshot_hashes(self, name: str = "snapshot") -> dict[str, str]:
         root_fd, _ = self._require_open()
+        self._snapshot_identity = None
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
             snapshot_fd = os.open(name, flags, dir_fd=root_fd)
@@ -273,9 +277,15 @@ class TransactionEvidenceRoot:
                 )
             hashes = _snapshot_hashes_from_dir(snapshot_fd)
             _assert_entry_identity(root_fd, name, opened, expect_directory=True)
+            self._snapshot_identity = (opened.st_dev, opened.st_ino)
             return hashes
         finally:
             os.close(snapshot_fd)
+
+    def validated_snapshot_identity(self) -> tuple[int, int] | None:
+        """Return the root identity from a successfully validated snapshot traversal."""
+        self._require_open()
+        return self._snapshot_identity
 
     def list_names(self) -> list[str]:
         root_fd, _ = self._require_open()

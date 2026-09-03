@@ -48,6 +48,7 @@ def load_active_transaction(
             # transaction-root descriptor. Refuse to interpret the resulting record
             # if the pathname itself was replaced while that evidence was inspected.
             evidence.assert_path_identity()
+            snapshot_root_identity = evidence.validated_snapshot_identity()
 
             plan = ApplyPlan(
                 commit=record.commit,
@@ -55,7 +56,13 @@ def load_active_transaction(
                 delete_paths=record.delete_paths,
                 write_sha256=record.write_sha256,
             )
-            transaction = FileTransaction(root, source_dir, staging_dir, plan)
+            transaction = FileTransaction(
+                root,
+                source_dir,
+                staging_dir,
+                plan,
+                snapshot_root_identity=snapshot_root_identity,
+            )
             transaction.existed = set(record.existed)
             transaction.snapshot_sha256 = dict(record.snapshot_sha256)
             transaction.supervisor_backup = record.supervisor_backup

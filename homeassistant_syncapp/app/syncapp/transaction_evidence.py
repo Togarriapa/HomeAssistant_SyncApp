@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -15,6 +16,137 @@ class TransactionEvidenceError(RuntimeError):
 
 class TransactionEvidenceMissing(TransactionEvidenceError):
     pass
+
+
+def _stable_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _assert_entry_identity(
+    dir_fd: int,
+    name: str,
+    expected: os.stat_result,
+    *,
+    expect_directory: bool,
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise TransactionEvidenceError(
+            f"transaction evidence entry {name} disappeared or became inaccessible while being read: {exc}"
+        ) from exc
+
+    expected_type_matches = (
+        stat.S_ISDIR(expected.st_mode) if expect_directory else stat.S_ISREG(expected.st_mode)
+    )
+    current_type_matches = (
+        stat.S_ISDIR(current.st_mode) if expect_directory else stat.S_ISREG(current.st_mode)
+    )
+    if (
+        not expected_type_matches
+        or not current_type_matches
+        or _stable_identity(current) != _stable_identity(expected)
+    ):
+        raise TransactionEvidenceError(
+            f"transaction evidence entry {name} was replaced or changed while being read"
+        )
+
+
+def _hash_regular_file_at(parent_fd: int, name: str) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise TransactionEvidenceError(
+            f"cannot open rollback snapshot file {name} safely: {exc}"
+        ) from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise TransactionEvidenceError(
+                f"rollback snapshot entry {name} is not a regular file"
+            )
+
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+
+        after = os.fstat(fd)
+        if _stable_identity(before) != _stable_identity(after) or total != after.st_size:
+            raise TransactionEvidenceError(
+                f"rollback snapshot file {name} changed while recovery evidence was being read"
+            )
+        _assert_entry_identity(parent_fd, name, after, expect_directory=False)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _snapshot_hashes_from_dir(dir_fd: int, prefix: str = "") -> dict[str, str]:
+    try:
+        names = sorted(os.listdir(dir_fd))
+    except OSError as exc:
+        raise TransactionEvidenceError(
+            f"cannot inspect rollback snapshot directory safely: {exc}"
+        ) from exc
+
+    found: dict[str, str] = {}
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for name in names:
+        try:
+            entry = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise TransactionEvidenceError(
+                f"rollback snapshot entry {name} disappeared or became inaccessible: {exc}"
+            ) from exc
+
+        relative = f"{prefix}/{name}" if prefix else name
+        if stat.S_ISDIR(entry.st_mode):
+            try:
+                child_fd = os.open(name, directory_flags, dir_fd=dir_fd)
+            except OSError as exc:
+                raise TransactionEvidenceError(
+                    f"cannot open rollback snapshot directory {relative} safely: {exc}"
+                ) from exc
+            try:
+                opened = os.fstat(child_fd)
+                if not stat.S_ISDIR(opened.st_mode) or (
+                    opened.st_dev,
+                    opened.st_ino,
+                ) != (entry.st_dev, entry.st_ino):
+                    raise TransactionEvidenceError(
+                        f"rollback snapshot directory {relative} changed while being opened"
+                    )
+                nested = _snapshot_hashes_from_dir(child_fd, relative)
+                overlap = set(found) & set(nested)
+                if overlap:
+                    raise TransactionEvidenceError(
+                        "rollback snapshot contains duplicate recovery paths"
+                    )
+                found.update(nested)
+                _assert_entry_identity(dir_fd, name, opened, expect_directory=True)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(entry.st_mode):
+            found[relative] = _hash_regular_file_at(dir_fd, name)
+        else:
+            raise TransactionEvidenceError(
+                f"rollback snapshot entry {relative} is not a regular file or directory"
+            )
+    return found
 
 
 class TransactionEvidenceRoot:
@@ -71,30 +203,7 @@ class TransactionEvidenceRoot:
 
     def _assert_child_identity(self, name: str, expected: os.stat_result) -> None:
         root_fd, _ = self._require_open()
-        try:
-            current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-        except OSError as exc:
-            raise TransactionEvidenceError(
-                f"transaction evidence entry {name} disappeared or became inaccessible while being read: {exc}"
-            ) from exc
-        expected_identity = (
-            expected.st_dev,
-            expected.st_ino,
-            expected.st_size,
-            expected.st_mtime_ns,
-            expected.st_ctime_ns,
-        )
-        current_identity = (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-            current.st_ctime_ns,
-        )
-        if not stat.S_ISREG(current.st_mode) or current_identity != expected_identity:
-            raise TransactionEvidenceError(
-                f"transaction evidence entry {name} was replaced or changed while being read"
-            )
+        _assert_entry_identity(root_fd, name, expected, expect_directory=False)
 
     def read_journal_text(self, name: str = "journal.json") -> str | None:
         root_fd, _ = self._require_open()
@@ -132,21 +241,7 @@ class TransactionEvidenceRoot:
                     )
 
             after = os.fstat(fd)
-            stable_before = (
-                before.st_dev,
-                before.st_ino,
-                before.st_size,
-                before.st_mtime_ns,
-                before.st_ctime_ns,
-            )
-            stable_after = (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            )
-            if stable_before != stable_after or total != after.st_size:
+            if _stable_identity(before) != _stable_identity(after) or total != after.st_size:
                 raise TransactionEvidenceError(
                     "transaction journal changed while recovery evidence was being read"
                 )
@@ -160,6 +255,27 @@ class TransactionEvidenceRoot:
                 ) from exc
         finally:
             os.close(fd)
+
+    def snapshot_hashes(self, name: str = "snapshot") -> dict[str, str]:
+        root_fd, _ = self._require_open()
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            snapshot_fd = os.open(name, flags, dir_fd=root_fd)
+        except OSError as exc:
+            raise TransactionEvidenceError(
+                f"cannot open transaction rollback snapshot safely (symlinks are refused): {exc}"
+            ) from exc
+        try:
+            opened = os.fstat(snapshot_fd)
+            if not stat.S_ISDIR(opened.st_mode):
+                raise TransactionEvidenceError(
+                    "transaction rollback snapshot is not a directory"
+                )
+            hashes = _snapshot_hashes_from_dir(snapshot_fd)
+            _assert_entry_identity(root_fd, name, opened, expect_directory=True)
+            return hashes
+        finally:
+            os.close(snapshot_fd)
 
     def list_names(self) -> list[str]:
         root_fd, _ = self._require_open()

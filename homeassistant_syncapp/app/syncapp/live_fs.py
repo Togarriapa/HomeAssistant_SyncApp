@@ -113,22 +113,26 @@ class LiveFilesystem:
     def _open_replacement_source(
         self, relative: str, source: Path
     ) -> Iterator[tuple[int, int]]:
-        """Open a staged/rollback source beneath its inferred root without pathname traversal.
+        """Pin replacement bytes to stable descriptor-relative source evidence.
 
-        FileTransaction always passes ``source_root / relative``. Derive that root
-        lexically from the already policy-approved relative path, then pin the root,
-        every parent directory entry, and the leaf before bytes are copied. The
-        complete directory-entry chain and leaf metadata are rechecked before the
-        caller is allowed to replace live configuration.
+        Production FileTransaction sources are ``source_root / relative``; those
+        receive full root-to-leaf confinement. Direct callers that supply an
+        unrelated single source file retain compatibility while still receiving a
+        no-follow parent/root open, pinned regular-file descriptor, byte digest,
+        and stable directory-entry proof.
         """
 
-        parts = self._parts(relative)
+        relative_parts = self._parts(relative)
         source = Path(source)
-        source_root = source
-        for _ in parts:
-            source_root = source_root.parent
-        if source_root.joinpath(*parts) != source:
-            raise LiveFilesystemError(f"replacement source is not rooted at expected path: {relative}")
+        source_parts = tuple(source.parts)
+        if len(source_parts) >= len(relative_parts) and source_parts[-len(relative_parts) :] == relative_parts:
+            source_root = source
+            for _ in relative_parts:
+                source_root = source_root.parent
+            traversal_parts = relative_parts
+        else:
+            source_root = source.parent
+            traversal_parts = (source.name,)
         if source_root.is_symlink():
             raise LiveFilesystemError(f"replacement source root must not be a symlink: {relative}")
 
@@ -153,12 +157,15 @@ class LiveFilesystem:
             root_identity = _directory_identity(root_info)
 
             current = root_fd
-            for part in parts[:-1]:
+            for part in traversal_parts[:-1]:
+                child: int | None = None
                 try:
                     child = os.open(part, directory_flags, dir_fd=current)
                     child_info = os.fstat(child)
                     entry_info = os.stat(part, dir_fd=current, follow_symlinks=False)
                 except OSError as exc:
+                    if child is not None:
+                        os.close(child)
                     raise LiveFilesystemError(
                         f"refusing unsafe replacement source parent: {relative}: {exc}"
                     ) from exc
@@ -173,7 +180,7 @@ class LiveFilesystem:
                 directory_fds.append(child)
                 current = child
 
-            leaf = parts[-1]
+            leaf = traversal_parts[-1]
             try:
                 source_fd = os.open(leaf, file_flags, dir_fd=current)
                 initial_info = os.fstat(source_fd)

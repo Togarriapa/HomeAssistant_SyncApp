@@ -49,17 +49,25 @@ class PinnedReadRoot:
             fd = os.open(self.root, flags)
         except OSError as exc:
             raise ReadEvidenceError(f"cannot open {self.label} root safely: {exc}") from exc
-        info = os.fstat(fd)
-        identity = (info.st_dev, info.st_ino)
-        if not stat.S_ISDIR(info.st_mode) or (
-            self.expected_identity is not None and identity != self.expected_identity
-        ):
+        try:
+            info = os.fstat(fd)
+            identity = (info.st_dev, info.st_ino)
+            if not stat.S_ISDIR(info.st_mode) or (
+                self.expected_identity is not None and identity != self.expected_identity
+            ):
+                raise ReadEvidenceError(
+                    f"{self.label} root no longer identifies validated evidence"
+                )
+            self._fd = fd
+            self._identity = identity
+            self.assert_path_identity()
+            return self
+        except Exception:
+            if self._fd == fd:
+                self._fd = None
+                self._identity = None
             os.close(fd)
-            raise ReadEvidenceError(f"{self.label} root no longer identifies validated evidence")
-        self._fd = fd
-        self._identity = identity
-        self.assert_path_identity()
-        return self
+            raise
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if self._fd is not None:
@@ -94,14 +102,17 @@ class PinnedReadRoot:
         parent_fd = root_fd
         try:
             for name in parts[:-1]:
+                child_fd: int | None = None
                 try:
                     entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                     child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+                    opened = os.fstat(child_fd)
                 except OSError as exc:
+                    if child_fd is not None:
+                        os.close(child_fd)
                     raise ReadEvidenceError(
                         f"cannot open {self.label} parent {name} safely: {exc}"
                     ) from exc
-                opened = os.fstat(child_fd)
                 if (
                     not stat.S_ISDIR(entry.st_mode)
                     or not stat.S_ISDIR(opened.st_mode)

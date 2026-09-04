@@ -70,6 +70,7 @@ class GitRepository:
         self.user_name = user_name
         self.user_email = user_email
         self._root_identity: tuple[int, int] | None = None
+        self._git_metadata_identity: tuple[int, int] | None = None
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -139,6 +140,44 @@ class GitRepository:
             os.close(root_fd)
             raise
 
+    def _assert_git_metadata_identity(
+        self, root_fd: int, expected: tuple[int, int]
+    ) -> None:
+        try:
+            current = os.stat(".git", dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise GitError("managed repository .git metadata disappeared during Git operation") from exc
+        if not stat.S_ISDIR(current.st_mode) or self._directory_identity(current) != expected:
+            raise GitError("managed repository .git metadata was replaced during Git operation")
+
+    def _open_pinned_git_metadata(
+        self, root_fd: int
+    ) -> tuple[int, tuple[int, int]] | None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            git_fd = os.open(".git", flags, dir_fd=root_fd)
+        except FileNotFoundError:
+            if self._git_metadata_identity is not None:
+                raise GitError("managed repository .git metadata disappeared between Git operations")
+            return None
+        except OSError as exc:
+            raise GitError("managed repository .git metadata cannot be opened safely") from exc
+
+        try:
+            opened = os.fstat(git_fd)
+            if not stat.S_ISDIR(opened.st_mode):
+                raise GitError("managed repository .git metadata is not a directory")
+            identity = self._directory_identity(opened)
+            if self._git_metadata_identity is None:
+                self._git_metadata_identity = identity
+            elif identity != self._git_metadata_identity:
+                raise GitError("managed repository .git metadata identity changed between Git operations")
+            self._assert_git_metadata_identity(root_fd, identity)
+            return git_fd, identity
+        except Exception:
+            os.close(git_fd)
+            raise
+
     def _run(
         self,
         *args: str,
@@ -147,12 +186,22 @@ class GitRepository:
     ) -> subprocess.CompletedProcess[str]:
         root_fd: int | None = None
         root_identity: tuple[int, int] | None = None
+        git_fd: int | None = None
+        git_identity: tuple[int, int] | None = None
         run_cwd: str | Path
         pass_fds: tuple[int, ...]
+        env = self._environment()
         if cwd is None:
             root_fd, root_identity = self._open_pinned_repository_root()
+            pinned_git = self._open_pinned_git_metadata(root_fd)
+            if pinned_git is not None:
+                git_fd, git_identity = pinned_git
+                env["GIT_DIR"] = f"/proc/self/fd/{git_fd}"
+                env["GIT_WORK_TREE"] = f"/proc/self/fd/{root_fd}"
+                pass_fds = (root_fd, git_fd)
+            else:
+                pass_fds = (root_fd,)
             run_cwd = f"/proc/self/fd/{root_fd}"
-            pass_fds = (root_fd,)
         else:
             run_cwd = cwd
             pass_fds = ()
@@ -161,16 +210,20 @@ class GitRepository:
             process = subprocess.run(
                 ["git", *args],
                 cwd=run_cwd,
-                env=self._environment(),
+                env=env,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
                 pass_fds=pass_fds,
             )
+            if root_fd is not None and git_identity is not None:
+                self._assert_git_metadata_identity(root_fd, git_identity)
             if root_identity is not None:
                 self._assert_repository_root_identity(root_identity)
         finally:
+            if git_fd is not None:
+                os.close(git_fd)
             if root_fd is not None:
                 os.close(root_fd)
 
@@ -181,18 +234,33 @@ class GitRepository:
 
     def _run_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
         root_fd, root_identity = self._open_pinned_repository_root()
+        git_fd: int | None = None
+        git_identity: tuple[int, int] | None = None
+        env = self._environment()
+        pinned_git = self._open_pinned_git_metadata(root_fd)
+        if pinned_git is not None:
+            git_fd, git_identity = pinned_git
+            env["GIT_DIR"] = f"/proc/self/fd/{git_fd}"
+            env["GIT_WORK_TREE"] = f"/proc/self/fd/{root_fd}"
+            pass_fds = (root_fd, git_fd)
+        else:
+            pass_fds = (root_fd,)
         try:
             process = subprocess.run(
                 ["git", *args],
                 cwd=f"/proc/self/fd/{root_fd}",
-                env=self._environment(),
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
-                pass_fds=(root_fd,),
+                pass_fds=pass_fds,
             )
+            if git_identity is not None:
+                self._assert_git_metadata_identity(root_fd, git_identity)
             self._assert_repository_root_identity(root_identity)
         finally:
+            if git_fd is not None:
+                os.close(git_fd)
             os.close(root_fd)
 
         if check and process.returncode != 0:

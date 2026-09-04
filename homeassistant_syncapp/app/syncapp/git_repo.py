@@ -106,6 +106,7 @@ class GitRepository:
             ("http.extraHeader", ""),
             ("http.cookieFile", ""),
             ("http.saveCookies", "false"),
+            ("http.curloptResolve", ""),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
         ]

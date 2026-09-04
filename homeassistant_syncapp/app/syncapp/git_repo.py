@@ -43,6 +43,14 @@ _GIT_ENVIRONMENT_OVERRIDES = {
     "VISUAL",
     "GIT_EXTERNAL_DIFF",
     "GIT_DIFF_OPTS",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
 }
 
 
@@ -133,6 +141,9 @@ class GitRepository:
             ("http.curloptResolve", ""),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
+            ("http.proxy", ""),
+            (f"http.{self.remote_url}.proxy", ""),
+            (f"http.{transport_alias}.proxy", ""),
         ]
         if _remote_identity(self.remote_url)[0] == "github.com":
             config.extend(

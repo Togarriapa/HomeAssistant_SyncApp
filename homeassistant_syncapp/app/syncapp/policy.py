@@ -20,6 +20,7 @@ BLOCKED_FILE_NAMES = {
     ".gitattributes",
     ".gitignore",
     ".gitmodules",
+    ".lfsconfig",
     ".uuid",
     "secrets.yaml",
     "secrets.yml",

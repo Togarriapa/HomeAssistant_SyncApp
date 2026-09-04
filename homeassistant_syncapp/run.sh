@@ -6,4 +6,4 @@ unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONBREAKPOINT PYTHONP
 export PYTHONNOUSERSITE="1"
 
 bashio::log.info "Starting HomeAssistant SyncApp"
-exec /usr/bin/python3 /app/main.py
+exec /usr/bin/python3 -E -s /app/main.py

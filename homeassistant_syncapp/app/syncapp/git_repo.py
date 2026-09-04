@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
 _TRANSPORT_ALIAS_SUFFIX = "#syncapp-authoritative-transport"
 _GIT_EXECUTABLE = "/usr/bin/git"
+_GIT_EXEC_PATH = "/usr/libexec/git-core"
 _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -110,6 +111,7 @@ class GitRepository:
             ):
                 env.pop(key, None)
 
+        env["GIT_EXEC_PATH"] = _GIT_EXEC_PATH
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull

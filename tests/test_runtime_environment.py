@@ -7,6 +7,7 @@ from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
+    scrub_git_reference_namespace,
     scrub_legacy_git_curl_verbose,
 )
 
@@ -143,6 +144,22 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         with patch.dict(os.environ, {"GIT_HTTP_MAX_REQUESTS": "5000"}, clear=True):
             lock_git_http_concurrency()
             self.assertEqual(os.environ["GIT_HTTP_MAX_REQUESTS"], "5")
+
+    def test_git_reference_namespace_is_removed_without_touching_unrelated_state(self) -> None:
+        environment = {
+            "GIT_NAMESPACE": "attacker/namespace",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        scrub_git_reference_namespace(environment)
+
+        self.assertNotIn("GIT_NAMESPACE", environment)
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_git_reference_namespace_scrub_targets_process_environment(self) -> None:
+        with patch.dict(os.environ, {"GIT_NAMESPACE": "attacker"}, clear=True):
+            scrub_git_reference_namespace()
+            self.assertNotIn("GIT_NAMESPACE", os.environ)
 
 
 if __name__ == "__main__":

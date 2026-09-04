@@ -11,6 +11,7 @@ from syncapp.git_evidence_environment import (
     lock_git_no_lazy_fetch,
     lock_git_optional_locks,
     lock_git_protocol_from_user,
+    scrub_git_allow_protocol,
 )
 from syncapp.runtime_environment import (
     configure_git_ca_trust,
@@ -54,6 +55,7 @@ def main() -> int:
     lock_git_optional_locks()
     lock_git_protocol_from_user()
     lock_git_literal_pathspecs()
+    scrub_git_allow_protocol()
     settings = Settings.load("/data/options.json")
     configure_git_ca_trust(settings.git_ca_bundle)
     engine = SyncEngine(settings)

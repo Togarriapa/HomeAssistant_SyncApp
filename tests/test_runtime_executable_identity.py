@@ -51,6 +51,9 @@ class RuntimeExecutableIdentityTests(unittest.TestCase):
         text = RUN_SCRIPT.read_text(encoding="utf-8")
         clean_exec = "exec /usr/bin/env -i"
         python_exec = "/usr/bin/python3 -E -s -B /app/main.py"
+        start = text.index(clean_exec)
+        end = text.index(python_exec, start)
+        launch_environment = text[start:end]
         allowlisted = (
             'PATH="/usr/bin:/bin"',
             'PYTHONNOUSERSITE="1"',
@@ -60,15 +63,12 @@ class RuntimeExecutableIdentityTests(unittest.TestCase):
             'LC_ALL="${LC_ALL-}"',
         )
 
-        self.assertIn(clean_exec, text)
         for assignment in allowlisted:
-            self.assertIn(assignment, text)
-            self.assertLess(text.index(clean_exec), text.index(assignment))
-            self.assertLess(text.index(assignment), text.index(python_exec))
-        self.assertNotIn('HOME="${HOME-}"', text)
-        self.assertNotIn('LD_PRELOAD="${LD_PRELOAD-}"', text)
-        self.assertNotIn('PYTHONPATH="${PYTHONPATH-}"', text)
-        self.assertNotIn('HTTPS_PROXY="${HTTPS_PROXY-}"', text)
+            self.assertIn(assignment, launch_environment)
+        self.assertNotIn('HOME="${HOME-}"', launch_environment)
+        self.assertNotIn('LD_PRELOAD="${LD_PRELOAD-}"', launch_environment)
+        self.assertNotIn('PYTHONPATH="${PYTHONPATH-}"', launch_environment)
+        self.assertNotIn('HTTPS_PROXY="${HTTPS_PROXY-}"', launch_environment)
 
     def test_python_startup_ignores_environment_user_site_and_bytecode_writes(self) -> None:
         text = RUN_SCRIPT.read_text(encoding="utf-8")

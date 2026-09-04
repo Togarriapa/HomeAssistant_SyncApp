@@ -6,7 +6,10 @@ import time
 
 from syncapp.config import Settings
 from syncapp.engine import SyncEngine
-from syncapp.runtime_environment import scrub_ambient_proxy_environment
+from syncapp.runtime_environment import (
+    lock_git_tls_negotiation_defaults,
+    scrub_ambient_proxy_environment,
+)
 
 
 logging.basicConfig(
@@ -27,6 +30,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _stop)
 
     scrub_ambient_proxy_environment()
+    lock_git_tls_negotiation_defaults()
     settings = Settings.load("/data/options.json")
     engine = SyncEngine(settings)
 

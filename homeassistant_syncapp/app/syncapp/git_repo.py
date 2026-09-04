@@ -475,10 +475,13 @@ class GitRepository:
 
         if current == self.branch and (local_head is not None or not has_remote_branch):
             return
-        if has_remote_branch:
-            self._run("checkout", "-B", self.branch, f"origin/{self.branch}")
-        else:
-            self._run("checkout", "-B", self.branch)
+        if current != self.branch:
+            shown = current or "<detached>"
+            raise GitError(
+                f"managed branch identity changed during repository initialization: {shown!r}"
+            )
+        self._run("reset", "--mixed", remote_ref)
+        self._run("clean", "-fdx")
 
     def fetch(self) -> None:
         self._assert_remote_provenance()

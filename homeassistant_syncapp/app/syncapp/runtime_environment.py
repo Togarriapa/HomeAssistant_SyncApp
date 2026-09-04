@@ -14,6 +14,16 @@ _AMBIENT_PROXY_KEYS = (
     "ALL_PROXY",
     "NO_PROXY",
 )
+_AMBIENT_GIT_TLS_CLIENT_CREDENTIAL_KEYS = (
+    "GIT_SSL_CERT",
+    "GIT_SSL_KEY",
+    "GIT_SSL_CERT_PASSWORD_PROTECTED",
+    "GIT_SSL_CERT_TYPE",
+    "GIT_SSL_KEY_TYPE",
+    "GIT_PROXY_SSL_CERT",
+    "GIT_PROXY_SSL_KEY",
+    "GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED",
+)
 
 
 def scrub_ambient_proxy_environment(
@@ -41,3 +51,13 @@ def lock_git_tls_negotiation_defaults(
     target = os.environ if environment is None else environment
     target["GIT_SSL_VERSION"] = ""
     target["GIT_SSL_CIPHER_LIST"] = ""
+
+
+def scrub_ambient_git_tls_client_credentials(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Remove inherited Git TLS client-certificate and private-key selectors."""
+
+    target = os.environ if environment is None else environment
+    for key in _AMBIENT_GIT_TLS_CLIENT_CREDENTIAL_KEYS:
+        target.pop(key, None)

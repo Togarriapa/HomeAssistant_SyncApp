@@ -49,10 +49,11 @@ class PushRemoteVerificationTests(unittest.TestCase):
             git(repository_path, "push", str(remote), f"{concurrent}:refs/heads/concurrent")
 
             original_run = repository._run
+            transport_url = repository._transport_remote_url()
 
             def run_with_remote_move(*args: str, **kwargs: object):
                 result = original_run(*args, **kwargs)
-                if args and args[0] == "push" and str(remote) in args:
+                if args and args[0] == "push" and transport_url in args:
                     git(remote, "update-ref", "refs/heads/main", concurrent)
                 return result
 

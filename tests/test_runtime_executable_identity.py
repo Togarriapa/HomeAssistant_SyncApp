@@ -33,6 +33,17 @@ class RuntimeExecutableIdentityTests(unittest.TestCase):
         self.assertLess(text.index(scrub), text.index(python_exec))
         self.assertLess(text.index(no_user_site), text.index(python_exec))
 
+    def test_run_script_scrubs_dynamic_loader_overrides_before_python_exec(self) -> None:
+        text = RUN_SCRIPT.read_text(encoding="utf-8")
+        scrub = (
+            "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT "
+            "LD_PROFILE LD_PROFILE_OUTPUT"
+        )
+        python_exec = "exec /usr/bin/python3 -E -s -B /app/main.py"
+
+        self.assertIn(scrub, text)
+        self.assertLess(text.index(scrub), text.index(python_exec))
+
     def test_python_startup_ignores_environment_user_site_and_bytecode_writes(self) -> None:
         text = RUN_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("exec /usr/bin/python3 -E -s -B /app/main.py", text)

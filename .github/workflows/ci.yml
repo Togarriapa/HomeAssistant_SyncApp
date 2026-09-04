@@ -86,6 +86,9 @@ jobs:
       - name: Smoke-test real image entrypoint boundary
         run: sh tests/run_image_entrypoint_smoke.sh homeassistant-syncapp:test
 
+      - name: Smoke-test complete image startup handoff
+        run: sh tests/run_full_image_startup_smoke.sh homeassistant-syncapp:test
+
       - name: Smoke-test bootstrap contract inside built image
         run: |
           docker run --rm \

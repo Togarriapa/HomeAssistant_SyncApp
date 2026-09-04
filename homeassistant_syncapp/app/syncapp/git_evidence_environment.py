@@ -49,3 +49,13 @@ def scrub_git_allow_protocol(
 
     target = os.environ if environment is None else environment
     target.pop("GIT_ALLOW_PROTOCOL", None)
+
+
+def lock_git_history_paranoia(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Fail closed on broken refs and stale commit-graph object references."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_REF_PARANOIA"] = "1"
+    target["GIT_COMMIT_GRAPH_PARANOIA"] = "1"

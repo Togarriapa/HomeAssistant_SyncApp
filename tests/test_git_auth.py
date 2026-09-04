@@ -23,12 +23,12 @@ class GitAuthTests(unittest.TestCase):
         self, environment: dict[str, str], remote_url: str
     ) -> None:
         transport_alias = f"{remote_url}#syncapp-authoritative-transport"
-        self.assertEqual(environment["GIT_CONFIG_KEY_7"], f"url.{remote_url}.insteadOf")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_7"], transport_alias)
-        self.assertEqual(
-            environment["GIT_CONFIG_KEY_8"], f"url.{remote_url}.pushInsteadOf"
-        )
+        self.assertEqual(environment["GIT_CONFIG_KEY_8"], f"url.{remote_url}.insteadOf")
         self.assertEqual(environment["GIT_CONFIG_VALUE_8"], transport_alias)
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_9"], f"url.{remote_url}.pushInsteadOf"
+        )
+        self.assertEqual(environment["GIT_CONFIG_VALUE_9"], transport_alias)
 
     def _assert_execution_controls(self, environment: dict[str, str]) -> None:
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
@@ -45,6 +45,8 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_VALUE_5"], "true")
         self.assertEqual(environment["GIT_CONFIG_KEY_6"], "http.followRedirects")
         self.assertEqual(environment["GIT_CONFIG_VALUE_6"], "initial")
+        self.assertEqual(environment["GIT_CONFIG_KEY_7"], "http.extraHeader")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_7"], "")
         self.assertEqual(environment["GIT_ASKPASS"], os.devnull)
         self.assertEqual(environment["SSH_ASKPASS"], os.devnull)
         self.assertEqual(environment["GIT_SSH_COMMAND"], "ssh")
@@ -58,21 +60,21 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "10")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "11")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_9"],
+            environment["GIT_CONFIG_KEY_10"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_9"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_9"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_10"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_10"])
 
     def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
         repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "9")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "10")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertFalse(
@@ -113,7 +115,7 @@ class GitAuthTests(unittest.TestCase):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "9")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "10")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertNotIn("attacker", " ".join(environment.values()))
@@ -194,6 +196,41 @@ class GitAuthTests(unittest.TestCase):
             ).stdout.strip()
 
             self.assertEqual(follow_redirects, "initial")
+
+    def test_repository_local_http_extra_headers_are_reset_last(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repository"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            injected = "X-SyncApp-Attacker: injected"
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "--add",
+                    "http.extraHeader",
+                    injected,
+                ],
+                check=True,
+            )
+            repository = GitRepository(
+                path=root,
+                remote_url="https://github.com/example/config.git",
+                branch="main",
+                token=None,
+                user_name="SyncApp Test",
+                user_email="syncapp-test@example.invalid",
+            )
+
+            headers = repository._run("config", "--get-all", "http.extraHeader")
+            values = headers.stdout.splitlines()
+
+            self.assertEqual(headers.returncode, 0)
+            self.assertIn(injected, values)
+            self.assertTrue(values)
+            self.assertEqual(values[-1], "")
 
 
 if __name__ == "__main__":

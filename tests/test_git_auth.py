@@ -69,15 +69,15 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "15")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "17")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_14"],
+            environment["GIT_CONFIG_KEY_16"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_14"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_14"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_16"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_16"])
 
     def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
@@ -142,7 +142,7 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_ATTR_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "14")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "16")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertNotIn("attacker", " ".join(environment.values()))

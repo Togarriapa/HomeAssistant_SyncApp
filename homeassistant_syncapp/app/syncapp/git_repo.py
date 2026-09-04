@@ -587,7 +587,7 @@ class GitRepository:
         return self._run_bytes("cat-file", "blob", object_id).stdout
 
     def add_all(self) -> None:
-        self._run("add", "-A")
+        self._run("add", "-A", "-f")
 
     def staged_paths(self) -> list[str]:
         result = self._run("diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")

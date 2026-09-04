@@ -93,6 +93,15 @@ def lock_git_http_concurrency(
     target["GIT_HTTP_MAX_REQUESTS"] = "5"
 
 
+def scrub_git_reference_namespace(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Keep managed branch/ref evidence in the repository's primary namespace."""
+
+    target = os.environ if environment is None else environment
+    target.pop("GIT_NAMESPACE", None)
+
+
 def _read_custom_ca_bundle(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:

@@ -30,6 +30,15 @@ class GitAuthTests(unittest.TestCase):
         )
         self.assertEqual(environment["GIT_CONFIG_VALUE_13"], transport_alias)
 
+    def _assert_proxy_lock(self, environment: dict[str, str], remote_url: str) -> None:
+        transport_alias = f"{remote_url}#syncapp-authoritative-transport"
+        self.assertEqual(environment["GIT_CONFIG_KEY_14"], "http.proxy")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_14"], "")
+        self.assertEqual(environment["GIT_CONFIG_KEY_15"], f"http.{remote_url}.proxy")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_15"], "")
+        self.assertEqual(environment["GIT_CONFIG_KEY_16"], f"http.{transport_alias}.proxy")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_16"], "")
+
     def _assert_execution_controls(self, environment: dict[str, str]) -> None:
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
         self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
@@ -69,23 +78,25 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "17")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "20")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
+        self._assert_proxy_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_16"],
+            environment["GIT_CONFIG_KEY_19"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_16"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_16"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_19"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_19"])
 
     def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
         repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "14")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "17")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
+        self._assert_proxy_lock(environment, remote_url)
         self.assertFalse(
             any(
                 value.startswith("Authorization: Basic ")
@@ -119,6 +130,14 @@ class GitAuthTests(unittest.TestCase):
             "GIT_CONFIG_KEY_0": "url.https://example.invalid/.insteadOf",
             "GIT_CONFIG_VALUE_0": "https://github.com/",
             "GIT_CONFIG_GLOBAL": "/tmp/attacker-global-config",
+            "http_proxy": "http://attacker.invalid:8001",
+            "https_proxy": "http://attacker.invalid:8002",
+            "all_proxy": "socks5://attacker.invalid:8003",
+            "no_proxy": "github.com",
+            "HTTP_PROXY": "http://attacker.invalid:8011",
+            "HTTPS_PROXY": "http://attacker.invalid:8012",
+            "ALL_PROXY": "socks5://attacker.invalid:8013",
+            "NO_PROXY": "github.com",
         }
         with patch.dict(os.environ, poisoned, clear=False):
             environment = repository._environment()
@@ -137,14 +156,23 @@ class GitAuthTests(unittest.TestCase):
             "GIT_TRACE2",
             "GIT_TRACE2_EVENT",
             "GIT_TRACE2_PERF",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
         ):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_ATTR_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "16")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "19")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
+        self._assert_proxy_lock(environment, remote_url)
         self.assertNotIn("attacker", " ".join(environment.values()))
         self.assertNotIn("example.invalid", " ".join(environment.values()))
 
@@ -169,6 +197,41 @@ class GitAuthTests(unittest.TestCase):
             effective = repository._run("config", "--get", "core.gitProxy").stdout.strip()
 
             self.assertEqual(effective, "none")
+
+    def test_repository_local_http_proxy_matches_are_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repository"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            remote_url = "https://github.com/example/config.git"
+            transport_alias = f"{remote_url}#syncapp-authoritative-transport"
+            for key, value in (
+                ("http.proxy", "http://generic-attacker.invalid:8080"),
+                (f"http.{remote_url}.proxy", "http://remote-attacker.invalid:8081"),
+                (f"http.{transport_alias}.proxy", "http://alias-attacker.invalid:8082"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(root), "config", key, value],
+                    check=True,
+                )
+            repository = GitRepository(
+                path=root,
+                remote_url=remote_url,
+                branch="main",
+                token=None,
+                user_name="SyncApp Test",
+                user_email="syncapp-test@example.invalid",
+            )
+
+            configured = repository._run(
+                "config", "--get-urlmatch", "http.proxy", remote_url
+            ).stdout.strip()
+            alias = repository._run(
+                "config", "--get-urlmatch", "http.proxy", transport_alias
+            ).stdout.strip()
+
+            self.assertEqual(configured, "")
+            self.assertEqual(alias, "")
 
     def test_repository_local_attributes_file_is_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

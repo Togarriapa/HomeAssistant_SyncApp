@@ -706,5 +706,5 @@ class GitRepository:
             raise GitError(
                 f"remote moved during apply: expected {expected_commit}, found {remote}"
             )
-        self._run("reset", "--hard", expected_commit)
-        self._run("clean", "-fd")
+        self._run("reset", "--mixed", expected_commit)
+        self._run("clean", "-fdx")

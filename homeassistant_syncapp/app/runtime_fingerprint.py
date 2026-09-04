@@ -5,11 +5,16 @@ import json
 import os
 from pathlib import Path
 import stat
+from typing import Protocol
 
 
 DEFAULT_APP_ROOT = Path("/app")
 DEFAULT_ENTRYPOINT = Path("/run.sh")
 FINGERPRINT_SCHEMA = "syncapp-runtime-v1"
+
+
+class Digest(Protocol):
+    def update(self, data: bytes) -> None: ...
 
 
 def _open_regular_no_follow(path: Path) -> int:
@@ -50,9 +55,7 @@ def _iter_app_files(app_root: Path) -> list[tuple[str, Path]]:
     return files
 
 
-def _hash_file(digest: object, label: str, path: Path) -> None:
-    if not isinstance(digest, type(hashlib.sha256())):
-        raise TypeError("digest must be a hashlib SHA-256 object")
+def _hash_file(digest: Digest, label: str, path: Path) -> None:
     encoded_label = label.encode("utf-8")
     digest.update(len(encoded_label).to_bytes(4, "big"))
     digest.update(encoded_label)

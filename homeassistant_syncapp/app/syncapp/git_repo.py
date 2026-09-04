@@ -17,6 +17,7 @@ from .read_evidence import PinnedReadRoot, ReadEvidenceError
 LOGGER = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
 _TRANSPORT_ALIAS_SUFFIX = "#syncapp-authoritative-transport"
+_GIT_EXECUTABLE = "/usr/bin/git"
 _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -292,7 +293,7 @@ class GitRepository:
 
         try:
             process = subprocess.run(
-                ["git", *args],
+                [_GIT_EXECUTABLE, *args],
                 cwd=run_cwd,
                 env=env,
                 text=True,
@@ -337,7 +338,7 @@ class GitRepository:
             pass_fds = (root_fd,)
         try:
             process = subprocess.run(
-                ["git", *args],
+                [_GIT_EXECUTABLE, *args],
                 cwd=f"/proc/self/fd/{root_fd}",
                 env=env,
                 input=input_data,

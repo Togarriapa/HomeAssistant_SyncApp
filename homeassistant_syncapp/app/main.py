@@ -6,6 +6,7 @@ import time
 
 from syncapp.config import Settings
 from syncapp.engine import SyncEngine
+from syncapp.git_evidence_environment import lock_git_no_lazy_fetch
 from syncapp.runtime_environment import (
     configure_git_ca_trust,
     lock_git_http_concurrency,
@@ -44,6 +45,7 @@ def main() -> int:
     scrub_git_reference_namespace()
     lock_git_repository_format()
     scrub_git_reference_backend()
+    lock_git_no_lazy_fetch()
     settings = Settings.load("/data/options.json")
     configure_git_ca_trust(settings.git_ca_bundle)
     engine = SyncEngine(settings)

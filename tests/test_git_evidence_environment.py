@@ -7,6 +7,7 @@ from syncapp.git_evidence_environment import (
     lock_git_no_lazy_fetch,
     lock_git_optional_locks,
     lock_git_protocol_from_user,
+    scrub_git_allow_protocol,
 )
 
 
@@ -90,6 +91,27 @@ class GitEvidenceEnvironmentTests(unittest.TestCase):
             self.assertEqual(os.environ["GIT_LITERAL_PATHSPECS"], "1")
             self.assertNotIn("GIT_GLOB_PATHSPECS", os.environ)
             self.assertNotIn("GIT_ICASE_PATHSPECS", os.environ)
+
+    def test_ambient_protocol_whitelist_is_removed_without_touching_other_state(self) -> None:
+        environment = {
+            "GIT_ALLOW_PROTOCOL": "https:file:ext",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        scrub_git_allow_protocol(environment)
+
+        self.assertNotIn("GIT_ALLOW_PROTOCOL", environment)
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_protocol_whitelist_scrub_targets_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GIT_ALLOW_PROTOCOL": "https:file:ext", "SYNCAPP_SENTINEL": "preserve-me"},
+            clear=True,
+        ):
+            scrub_git_allow_protocol()
+            self.assertNotIn("GIT_ALLOW_PROTOCOL", os.environ)
+            self.assertEqual(os.environ["SYNCAPP_SENTINEL"], "preserve-me")
 
 
 if __name__ == "__main__":

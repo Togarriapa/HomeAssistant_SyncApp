@@ -102,6 +102,16 @@ def scrub_git_reference_namespace(
     target.pop("GIT_NAMESPACE", None)
 
 
+def lock_git_repository_format(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Keep new managed repositories on the expected object/ref storage formats."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_DEFAULT_HASH"] = "sha1"
+    target["GIT_DEFAULT_REF_FORMAT"] = "files"
+
+
 def _read_custom_ca_bundle(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:

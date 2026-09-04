@@ -16,6 +16,8 @@ map:
   - type: homeassistant_config
     read_only: false
     path: /homeassistant
+  - type: addon_config
+    read_only: true
 options:
   homeassistant_repository_url: null
   branch: main
@@ -35,6 +37,7 @@ schema:
   repository_url: url?
   branch: str
   github_token: password?
+  git_ca_bundle: str?
   poll_interval_seconds: int(30,86400)
   dry_run: bool
   remote_apply_enabled: bool

@@ -11,6 +11,8 @@ RUN apk add --no-cache \
     python3 \
     && test -x /usr/bin/git \
     && test -x /usr/bin/python3 \
+    && test "$(/usr/bin/git --exec-path)" = "/usr/libexec/git-core" \
+    && test -x /usr/libexec/git-core/git-remote-https \
     && test -r /etc/ssl/certs/ca-certificates.crt \
     && test -d /etc/ssl/certs
 

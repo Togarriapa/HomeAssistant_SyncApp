@@ -10,6 +10,7 @@ RUN apk add --no-cache \
     py3-yaml \
     python3 \
     && test -x /usr/bin/git \
+    && test -x /usr/bin/python3 \
     && test -r /etc/ssl/certs/ca-certificates.crt \
     && test -d /etc/ssl/certs
 

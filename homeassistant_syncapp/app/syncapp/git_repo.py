@@ -31,6 +31,14 @@ _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_SSL_NO_VERIFY",
     "GIT_ATTR_SOURCE",
     "GIT_ATTR_NOSYSTEM",
+    "GIT_PAGER",
+    "PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "EDITOR",
+    "VISUAL",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
 }
 
 
@@ -96,6 +104,13 @@ class GitRepository:
         env["GIT_ASKPASS"] = os.devnull
         env["SSH_ASKPASS"] = os.devnull
         env["GIT_SSH_COMMAND"] = "ssh"
+        env["GIT_PAGER"] = "/bin/cat"
+        env["PAGER"] = "/bin/cat"
+        env["GIT_EDITOR"] = "/bin/false"
+        env["GIT_SEQUENCE_EDITOR"] = "/bin/false"
+        env["EDITOR"] = "/bin/false"
+        env["VISUAL"] = "/bin/false"
+        env["GIT_EXTERNAL_DIFF"] = "/bin/false"
 
         transport_alias = self._transport_remote_url()
         config: list[tuple[str, str]] = [

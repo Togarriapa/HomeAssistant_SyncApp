@@ -129,6 +129,13 @@ class GitRepository:
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
         ]
+        if _remote_identity(self.remote_url)[0] == "github.com":
+            config.extend(
+                [
+                    ("protocol.allow", "never"),
+                    ("protocol.https.allow", "always"),
+                ]
+            )
         if self.token:
             parsed = urlparse(self.remote_url)
             if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _GITHUB_HOSTS:

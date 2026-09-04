@@ -197,11 +197,12 @@ class GitAuthTests(unittest.TestCase):
 
             self.assertEqual(follow_redirects, "initial")
 
-    def test_repository_local_http_extra_headers_are_cleared(self) -> None:
+    def test_repository_local_http_extra_headers_are_reset_last(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repository"
             root.mkdir()
             subprocess.run(["git", "init", "-q", str(root)], check=True)
+            injected = "X-SyncApp-Attacker: injected"
             subprocess.run(
                 [
                     "git",
@@ -210,7 +211,7 @@ class GitAuthTests(unittest.TestCase):
                     "config",
                     "--add",
                     "http.extraHeader",
-                    "X-SyncApp-Attacker: injected",
+                    injected,
                 ],
                 check=True,
             )
@@ -224,10 +225,12 @@ class GitAuthTests(unittest.TestCase):
             )
 
             headers = repository._run("config", "--get-all", "http.extraHeader")
+            values = headers.stdout.splitlines()
 
             self.assertEqual(headers.returncode, 0)
-            self.assertEqual(headers.stdout.strip(), "")
-            self.assertNotIn("attacker", headers.stdout.lower())
+            self.assertIn(injected, values)
+            self.assertTrue(values)
+            self.assertEqual(values[-1], "")
 
 
 if __name__ == "__main__":

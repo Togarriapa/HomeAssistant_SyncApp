@@ -178,6 +178,24 @@ class GitRepository:
             os.close(git_fd)
             raise
 
+    def _create_and_bind_git_metadata(self) -> None:
+        root_fd, root_identity = self._open_pinned_repository_root()
+        try:
+            try:
+                os.mkdir(".git", mode=0o700, dir_fd=root_fd)
+            except FileExistsError as exc:
+                raise GitError(
+                    "managed repository .git metadata appeared during bootstrap; refusing ambiguous repository state"
+                ) from exc
+            pinned_git = self._open_pinned_git_metadata(root_fd)
+            if pinned_git is None:
+                raise GitError("managed repository .git metadata disappeared during bootstrap")
+            git_fd, _ = pinned_git
+            os.close(git_fd)
+            self._assert_repository_root_identity(root_identity)
+        finally:
+            os.close(root_fd)
+
     def _run(
         self,
         *args: str,
@@ -362,6 +380,7 @@ class GitRepository:
         else:
             self.path.mkdir(mode=0o700)
 
+        self._create_and_bind_git_metadata()
         self._run("init")
         self._run("symbolic-ref", "HEAD", f"refs/heads/{self.branch}")
         self._run("remote", "add", "origin", self.remote_url)

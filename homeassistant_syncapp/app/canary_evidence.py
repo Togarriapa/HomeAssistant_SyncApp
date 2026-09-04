@@ -20,7 +20,7 @@ def _verified_runtime_fingerprint(expected_sha256: str | None) -> dict[str, obje
     if expected_sha256 is not None:
         expected = expected_sha256.strip().lower()
         if not _SHA256_RE.fullmatch(expected):
-            raise RuntimeError("expected runtime SHA-256 must be exactly 64 lowercase hexadecimal characters")
+            raise RuntimeError("expected runtime SHA-256 must be exactly 64 hexadecimal characters")
         if observed != expected:
             raise RuntimeError(
                 "runtime image fingerprint does not match the expected green CI image: "
@@ -41,6 +41,14 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "expected SHA-256 emitted by /app/runtime_fingerprint.py in the exact green "
             "candidate's Docker CI job; mismatch fails before any canary operation"
+        ),
+    )
+    parser.add_argument(
+        "--identity-only",
+        action="store_true",
+        help=(
+            "verify only the expected runtime identity and exit without constructing a "
+            "Supervisor client; intended for built-image CI and preflight evidence"
         ),
     )
     parser.add_argument("--backup", action="store_true")
@@ -69,8 +77,24 @@ def main() -> int:
         parser.error("--restart requires --backup")
     if args.backup_archive_probe and not args.backup:
         parser.error("--backup-archive-probe requires --backup")
+    if args.identity_only and not args.expected_runtime_sha256:
+        parser.error("--identity-only requires --expected-runtime-sha256")
+    if args.identity_only and any(
+        (
+            args.backup,
+            args.backup_archive_probe,
+            args.restart,
+            args.filesystem,
+            args.filesystem_write_probe,
+        )
+    ):
+        parser.error("--identity-only cannot be combined with canary operation flags")
 
     runtime = _verified_runtime_fingerprint(args.expected_runtime_sha256)
+    if args.identity_only:
+        print(json.dumps({"runtime_image": runtime, "identity_verified": True}, indent=2, sort_keys=True))
+        return 0
+
     result = run_canary(
         SupervisorClient(),
         create_backup=args.backup,

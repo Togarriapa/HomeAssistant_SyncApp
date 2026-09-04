@@ -8,6 +8,7 @@ from syncapp.config import Settings
 from syncapp.engine import SyncEngine
 from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
+    scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
 )
 
@@ -31,6 +32,7 @@ def main() -> int:
 
     scrub_ambient_proxy_environment()
     lock_git_tls_negotiation_defaults()
+    scrub_ambient_git_tls_client_credentials()
     settings = Settings.load("/data/options.json")
     engine = SyncEngine(settings)
 

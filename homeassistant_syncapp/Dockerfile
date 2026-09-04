@@ -5,9 +5,12 @@ ARG BUILD_VERSION
 ARG BUILD_ARCH
 
 RUN apk add --no-cache \
+    ca-certificates \
     git \
     py3-yaml \
-    python3
+    python3 \
+    && test -r /etc/ssl/certs/ca-certificates.crt \
+    && test -d /etc/ssl/certs
 
 COPY app /app
 COPY run.sh /run.sh

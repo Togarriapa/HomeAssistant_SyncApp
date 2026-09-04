@@ -19,6 +19,17 @@ def git(cwd: Path, *args: str) -> str:
     return process.stdout.strip()
 
 
+def refs(cwd: Path) -> str:
+    return subprocess.run(
+        ["git", "show-ref"],
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ).stdout.strip()
+
+
 def configure_identity(cwd: Path) -> None:
     git(cwd, "config", "user.name", "SyncApp Test")
     git(cwd, "config", "user.email", "syncapp-test@example.invalid")
@@ -103,7 +114,7 @@ class GitTransportUrlRewriteTests(unittest.TestCase):
 
         self.assertEqual(self.repository.remote_head(), expected)
         self.assertEqual(self.repository.relationship(), "remote_ahead")
-        self.assertEqual(git(self.attacker, "show-ref"), "")
+        self.assertEqual(refs(self.attacker), "")
 
     def test_push_transport_ignores_rewrite_inserted_after_provenance_check(self) -> None:
         (self.work / "automations.yaml").write_text("[]\n", encoding="utf-8")
@@ -115,7 +126,7 @@ class GitTransportUrlRewriteTests(unittest.TestCase):
             self.repository.push(expected)
 
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/main"), expected)
-        self.assertEqual(git(self.attacker, "show-ref"), "")
+        self.assertEqual(refs(self.attacker), "")
         self.assertEqual(self.repository.relationship(), "equal")
 
 

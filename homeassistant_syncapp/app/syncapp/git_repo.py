@@ -29,6 +29,8 @@ _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_ASKPASS",
     "SSH_ASKPASS",
     "GIT_SSL_NO_VERIFY",
+    "GIT_ATTR_SOURCE",
+    "GIT_ATTR_NOSYSTEM",
 }
 
 
@@ -90,6 +92,7 @@ class GitRepository:
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_ATTR_NOSYSTEM"] = "1"
         env["GIT_ASKPASS"] = os.devnull
         env["SSH_ASKPASS"] = os.devnull
         env["GIT_SSH_COMMAND"] = "ssh"
@@ -100,6 +103,7 @@ class GitRepository:
             ("core.fsmonitor", "false"),
             ("core.gitProxy", "none"),
             ("credential.helper", ""),
+            ("core.attributesFile", os.devnull),
             ("http.sslVerify", "true"),
             ("http.proxySSLVerify", "true"),
             ("http.followRedirects", "initial"),

@@ -62,6 +62,29 @@ class GitCaTrustTests(unittest.TestCase):
             self.assertNotIn("SSL_CERT_FILE", environment)
             self.assertNotIn("SSL_CERT_DIR", environment)
 
+    def test_default_ca_trust_never_reuses_a_stale_custom_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            system_dir = root / "system-certs"
+            system_dir.mkdir()
+            system_bundle = system_dir / "ca-certificates.crt"
+            system_bundle.write_text("system-ca", encoding="utf-8")
+            stale_snapshot = root / "data" / "trusted-ca.pem"
+            stale_snapshot.parent.mkdir()
+            stale_snapshot.write_text("stale-custom-ca", encoding="utf-8")
+            environment: dict[str, str] = {}
+
+            configure_git_ca_trust(
+                None,
+                environment,
+                system_bundle=system_bundle,
+                system_ca_path=system_dir,
+                snapshot_path=stale_snapshot,
+            )
+
+            self.assertEqual(environment["GIT_SSL_CAINFO"], str(system_bundle))
+            self.assertNotEqual(environment["GIT_SSL_CAINFO"], str(stale_snapshot))
+
     def test_custom_ca_is_snapshotted_before_git_uses_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -99,6 +122,40 @@ class GitCaTrustTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeEnvironmentError, "opened safely"):
                 configure_git_ca_trust(
                     link,
+                    {},
+                    system_bundle=root / "unused-system-bundle",
+                    system_ca_path=system_dir,
+                    snapshot_path=root / "snapshot.pem",
+                )
+
+    def test_empty_custom_ca_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "empty.pem"
+            source.touch()
+            system_dir = root / "system-certs"
+            system_dir.mkdir()
+
+            with self.assertRaisesRegex(RuntimeEnvironmentError, "empty"):
+                configure_git_ca_trust(
+                    source,
+                    {},
+                    system_bundle=root / "unused-system-bundle",
+                    system_ca_path=system_dir,
+                    snapshot_path=root / "snapshot.pem",
+                )
+
+    def test_oversized_custom_ca_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "oversized.pem"
+            source.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+            system_dir = root / "system-certs"
+            system_dir.mkdir()
+
+            with self.assertRaisesRegex(RuntimeEnvironmentError, "2 MiB"):
+                configure_git_ca_trust(
+                    source,
                     {},
                     system_bundle=root / "unused-system-bundle",
                     system_ca_path=system_dir,

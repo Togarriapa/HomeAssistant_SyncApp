@@ -87,6 +87,13 @@ class RepositoryBootstrapSafetyTests(unittest.TestCase):
         (seed / "configuration.yaml").write_text("homeassistant:\n", encoding="utf-8")
         git(seed, "add", "configuration.yaml")
         git(seed, "commit", "-m", "initial")
+        expected_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=seed,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
         git(seed, "remote", "add", "origin", str(self.remote))
         git(seed, "push", "origin", "main")
 
@@ -96,10 +103,15 @@ class RepositoryBootstrapSafetyTests(unittest.TestCase):
         managed_repository.ensure()
 
         self.assertEqual(managed_repository.relationship(), "equal")
+        self.assertEqual(managed_repository.head(), expected_commit)
+        self.assertEqual(managed_repository.remote_head(), expected_commit)
         self.assertTrue((managed / ".git").is_dir())
+        self.assertFalse((managed / "configuration.yaml").exists())
+        entries = managed_repository.index_tree_entries()
+        self.assertEqual([entry.path for entry in entries], ["configuration.yaml"])
         self.assertEqual(
-            (managed / "configuration.yaml").read_text(encoding="utf-8"),
-            "homeassistant:\n",
+            managed_repository.read_blob(entries[0].object_id),
+            b"homeassistant:\n",
         )
 
 

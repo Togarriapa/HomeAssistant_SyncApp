@@ -84,11 +84,25 @@ jobs:
             homeassistant_syncapp
 
       - name: Record built runtime fingerprint
+        id: runtime-fingerprint
+        run: |
+          FINGERPRINT_JSON="$(docker run --rm \
+            --entrypoint /usr/bin/python3 \
+            homeassistant-syncapp:test \
+            -E -s -B /app/runtime_fingerprint.py)"
+          printf '%s\n' "$FINGERPRINT_JSON"
+          RUNTIME_SHA256="$(printf '%s' "$FINGERPRINT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')"
+          test "${#RUNTIME_SHA256}" -eq 64
+          printf 'sha256=%s\n' "$RUNTIME_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Verify runtime-bound canary identity preflight
         run: |
           docker run --rm \
             --entrypoint /usr/bin/python3 \
             homeassistant-syncapp:test \
-            -E -s -B /app/runtime_fingerprint.py
+            -E -s -B /app/canary_evidence.py \
+            --identity-only \
+            --expected-runtime-sha256 "${{ steps.runtime-fingerprint.outputs.sha256 }}"
 
       - name: Smoke-test real image entrypoint boundary
         run: sh tests/run_image_entrypoint_smoke.sh homeassistant-syncapp:test

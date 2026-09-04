@@ -236,6 +236,7 @@ class GitRepository:
         root_fd, root_identity = self._open_pinned_repository_root()
         git_fd: int | None = None
         git_identity: tuple[int, int] | None = None
+        pass_fds: tuple[int, ...]
         env = self._environment()
         pinned_git = self._open_pinned_git_metadata(root_fd)
         if pinned_git is not None:

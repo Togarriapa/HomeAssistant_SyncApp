@@ -13,6 +13,8 @@ At creation of this candidate:
 
 The deep stacked PR chain is useful for incremental review, but it is not a substitute for validating the cumulative product as a whole. This integration branch exists to provide a single review/CI surface against `main`.
 
+The integration CI also smoke-tests the startup bootstrap **inside the built Home Assistant base image**. It invokes the image's shipped `/usr/bin/python3 -E -s -B`, imports `/app/process_bootstrap.py`, proves the long-lived service environment allowlist, verifies hostile proxy/Git/Python/dynamic-loader inputs are omitted, and proves the Supervisor token is not placed in service argv. The final `execve` is intercepted only inside that smoke process so CI does not contact Supervisor or start the long-running service loop.
+
 ## Non-negotiable update workflow
 
 The integrated implementation must preserve:
@@ -31,9 +33,9 @@ The SyncApp source repository and the managed Home Assistant configuration repos
 
 ## What CI proves
 
-The cumulative CI suite provides deterministic evidence for static/type correctness, unit/integration/failure-injection behavior, policy enforcement, transaction/recovery invariants, Git provenance and environment isolation, staging/live filesystem confinement, Supervisor contract handling, backup/archive validation, and image buildability.
+The cumulative CI suite provides deterministic evidence for static/type correctness, unit/integration/failure-injection behavior, policy enforcement, transaction/recovery invariants, Git provenance and environment isolation, staging/live filesystem confinement, Supervisor contract handling, backup/archive validation, image buildability, and the built-image bootstrap/environment contract described above.
 
-CI does **not** prove the behavior of a real Home Assistant OS/Supervisor installation, including mount/filesystem semantics, real Supervisor backup materialization/latency, `/core/check`, Core restart/health transitions, add-on container environment behavior, or power-loss/reboot recovery on the target platform.
+CI does **not** prove the behavior of a real Home Assistant OS/Supervisor installation, including mount/filesystem semantics, real Supervisor backup materialization/latency, `/core/check`, Core restart/health transitions, add-on container environment injection and shebang behavior, or power-loss/reboot recovery on the target platform.
 
 ## Merge gate
 

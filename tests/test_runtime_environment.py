@@ -6,6 +6,7 @@ from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
+    scrub_legacy_git_curl_verbose,
 )
 
 
@@ -109,6 +110,22 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             scrub_ambient_git_tls_client_credentials()
             self.assertNotIn("GIT_SSL_CERT", os.environ)
             self.assertNotIn("GIT_SSL_KEY", os.environ)
+
+    def test_legacy_curl_verbose_is_removed_without_touching_unrelated_state(self) -> None:
+        environment = {
+            "GIT_CURL_VERBOSE": "1",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        scrub_legacy_git_curl_verbose(environment)
+
+        self.assertNotIn("GIT_CURL_VERBOSE", environment)
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_legacy_curl_verbose_scrub_targets_process_environment(self) -> None:
+        with patch.dict(os.environ, {"GIT_CURL_VERBOSE": "1"}, clear=True):
+            scrub_legacy_git_curl_verbose()
+            self.assertNotIn("GIT_CURL_VERBOSE", os.environ)
 
 
 if __name__ == "__main__":

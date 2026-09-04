@@ -11,6 +11,7 @@ from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
+    scrub_legacy_git_curl_verbose,
 )
 
 
@@ -34,6 +35,7 @@ def main() -> int:
     scrub_ambient_proxy_environment()
     lock_git_tls_negotiation_defaults()
     scrub_ambient_git_tls_client_credentials()
+    scrub_legacy_git_curl_verbose()
     settings = Settings.load("/data/options.json")
     configure_git_ca_trust(settings.git_ca_bundle)
     engine = SyncEngine(settings)

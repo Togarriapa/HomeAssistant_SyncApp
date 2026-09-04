@@ -10,7 +10,7 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(is_allowed_relative("packages/lights.yaml"))
         self.assertTrue(is_allowed_relative("custom_components/example/manifest.json"))
 
-    def test_blocks_secrets_runtime_state_and_git_attributes(self):
+    def test_blocks_secrets_runtime_state_and_git_control_files(self):
         for path in (
             "secrets.yaml",
             ".storage/core.config_entries",
@@ -21,6 +21,8 @@ class PolicyTests(unittest.TestCase):
             "deps/cache.bin",
             ".gitattributes",
             "packages/.gitattributes",
+            ".gitignore",
+            "packages/.gitignore",
         ):
             with self.subTest(path=path):
                 self.assertFalse(is_allowed_relative(path))

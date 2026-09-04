@@ -28,6 +28,7 @@ _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_PROXY_COMMAND",
     "GIT_ASKPASS",
     "SSH_ASKPASS",
+    "GIT_SSL_NO_VERIFY",
 }
 
 
@@ -95,6 +96,8 @@ class GitRepository:
             ("core.fsmonitor", "false"),
             ("core.gitProxy", "none"),
             ("credential.helper", ""),
+            ("http.sslVerify", "true"),
+            ("http.proxySSLVerify", "true"),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
         ]

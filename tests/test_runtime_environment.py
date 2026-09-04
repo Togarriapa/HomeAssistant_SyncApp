@@ -1,4 +1,7 @@
 import os
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -187,6 +190,36 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             lock_git_repository_format()
             self.assertEqual(os.environ["GIT_DEFAULT_HASH"], "sha1")
             self.assertEqual(os.environ["GIT_DEFAULT_REF_FORMAT"], "files")
+
+    def test_git_init_uses_locked_repository_format(self) -> None:
+        environment = os.environ.copy()
+        environment["GIT_DEFAULT_HASH"] = "sha256"
+        environment["GIT_DEFAULT_REF_FORMAT"] = "reftable"
+        lock_git_repository_format(environment)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "managed"
+            subprocess.run(
+                ["git", "init", str(repository)],
+                check=True,
+                env=environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            object_format = subprocess.run(
+                ["git", "rev-parse", "--show-object-format"],
+                cwd=repository,
+                check=True,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).stdout.strip()
+            config = (repository / ".git" / "config").read_text(encoding="utf-8")
+
+        self.assertEqual(object_format, "sha1")
+        self.assertNotIn("objectformat = sha256", config.lower())
+        self.assertNotIn("refstorage = reftable", config.lower())
 
 
 if __name__ == "__main__":

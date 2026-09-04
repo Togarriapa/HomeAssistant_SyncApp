@@ -31,6 +31,20 @@ def _validate_github_repository_url(value: str, option_name: str) -> tuple[str, 
     return "github.com", "/".join(parts).lower()
 
 
+def _trusted_ca_bundle_path(raw_value: object) -> Path | None:
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    candidate = Path(value)
+    if candidate.is_absolute() or candidate.name != value or value in {".", ".."}:
+        raise ValueError(
+            "git_ca_bundle must be a single filename stored in the SyncApp app configuration directory"
+        )
+    return Path("/config") / value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     # Internal compatibility name retained so the sync engine and Git abstraction do
@@ -51,6 +65,7 @@ class Settings:
     initial_remote_apply_enabled: bool = False
     remote_max_deletions: int = 25
     remote_max_deletion_percent: int = 50
+    git_ca_bundle: Path | None = None
     source_dir: Path = Path("/homeassistant")
     repository_dir: Path = Path("/data/repository")
     staging_dir: Path = Path("/data/staging")
@@ -145,4 +160,5 @@ class Settings:
             initial_remote_apply_enabled=initial_remote_apply_enabled,
             remote_max_deletions=remote_max_deletions,
             remote_max_deletion_percent=remote_max_deletion_percent,
+            git_ca_bundle=_trusted_ca_bundle_path(raw.get("git_ca_bundle")),
         )

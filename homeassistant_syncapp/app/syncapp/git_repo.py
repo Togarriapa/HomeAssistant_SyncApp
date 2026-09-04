@@ -80,7 +80,11 @@ class GitRepository:
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
         for key in list(env):
-            if key in _GIT_ENVIRONMENT_OVERRIDES or key.startswith("GIT_CONFIG_"):
+            if (
+                key in _GIT_ENVIRONMENT_OVERRIDES
+                or key.startswith("GIT_CONFIG_")
+                or key.startswith("GIT_TRACE")
+            ):
                 env.pop(key, None)
 
         env["GIT_TERMINAL_PROMPT"] = "0"

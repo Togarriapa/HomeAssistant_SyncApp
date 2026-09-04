@@ -23,12 +23,12 @@ class GitAuthTests(unittest.TestCase):
         self, environment: dict[str, str], remote_url: str
     ) -> None:
         transport_alias = f"{remote_url}#syncapp-authoritative-transport"
-        self.assertEqual(environment["GIT_CONFIG_KEY_4"], f"url.{remote_url}.insteadOf")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_4"], transport_alias)
+        self.assertEqual(environment["GIT_CONFIG_KEY_6"], f"url.{remote_url}.insteadOf")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_6"], transport_alias)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_5"], f"url.{remote_url}.pushInsteadOf"
+            environment["GIT_CONFIG_KEY_7"], f"url.{remote_url}.pushInsteadOf"
         )
-        self.assertEqual(environment["GIT_CONFIG_VALUE_5"], transport_alias)
+        self.assertEqual(environment["GIT_CONFIG_VALUE_7"], transport_alias)
 
     def _assert_execution_controls(self, environment: dict[str, str]) -> None:
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
@@ -39,6 +39,10 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_VALUE_2"], "none")
         self.assertEqual(environment["GIT_CONFIG_KEY_3"], "credential.helper")
         self.assertEqual(environment["GIT_CONFIG_VALUE_3"], "")
+        self.assertEqual(environment["GIT_CONFIG_KEY_4"], "http.sslVerify")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_4"], "true")
+        self.assertEqual(environment["GIT_CONFIG_KEY_5"], "http.proxySSLVerify")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_5"], "true")
         self.assertEqual(environment["GIT_ASKPASS"], os.devnull)
         self.assertEqual(environment["SSH_ASKPASS"], os.devnull)
         self.assertEqual(environment["GIT_SSH_COMMAND"], "ssh")
@@ -52,21 +56,21 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "7")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "9")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_6"],
+            environment["GIT_CONFIG_KEY_8"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_6"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_6"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_8"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_8"])
 
     def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
         repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "6")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "8")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertFalse(
@@ -88,6 +92,7 @@ class GitAuthTests(unittest.TestCase):
             "SSH_ASKPASS": "/tmp/attacker-ssh-askpass",
             "GIT_SSH_COMMAND": "/tmp/attacker-ssh",
             "GIT_PROXY_COMMAND": "/tmp/attacker-proxy",
+            "GIT_SSL_NO_VERIFY": "1",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "url.https://example.invalid/.insteadOf",
             "GIT_CONFIG_VALUE_0": "https://github.com/",
@@ -96,11 +101,17 @@ class GitAuthTests(unittest.TestCase):
         with patch.dict(os.environ, poisoned, clear=False):
             environment = repository._environment()
 
-        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_TEMPLATE_DIR", "GIT_PROXY_COMMAND"):
+        for key in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_TEMPLATE_DIR",
+            "GIT_PROXY_COMMAND",
+            "GIT_SSL_NO_VERIFY",
+        ):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "6")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "8")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertNotIn("attacker", " ".join(environment.values()))
@@ -127,6 +138,36 @@ class GitAuthTests(unittest.TestCase):
             effective = repository._run("config", "--get", "core.gitProxy").stdout.strip()
 
             self.assertEqual(effective, "none")
+
+    def test_repository_local_tls_verification_disables_are_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repository"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "http.sslVerify", "false"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "http.proxySSLVerify", "false"],
+                check=True,
+            )
+            repository = GitRepository(
+                path=root,
+                remote_url="https://github.com/example/config.git",
+                branch="main",
+                token=None,
+                user_name="SyncApp Test",
+                user_email="syncapp-test@example.invalid",
+            )
+
+            ssl_verify = repository._run("config", "--get", "http.sslVerify").stdout.strip()
+            proxy_ssl_verify = repository._run(
+                "config", "--get", "http.proxySSLVerify"
+            ).stdout.strip()
+
+            self.assertEqual(ssl_verify, "true")
+            self.assertEqual(proxy_ssl_verify, "true")
 
 
 if __name__ == "__main__":

@@ -22,12 +22,20 @@ class GitAuthTests(unittest.TestCase):
         self, environment: dict[str, str], remote_url: str
     ) -> None:
         transport_alias = f"{remote_url}#syncapp-authoritative-transport"
-        self.assertEqual(environment["GIT_CONFIG_KEY_2"], f"url.{remote_url}.insteadOf")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_2"], transport_alias)
-        self.assertEqual(
-            environment["GIT_CONFIG_KEY_3"], f"url.{remote_url}.pushInsteadOf"
-        )
+        self.assertEqual(environment["GIT_CONFIG_KEY_3"], f"url.{remote_url}.insteadOf")
         self.assertEqual(environment["GIT_CONFIG_VALUE_3"], transport_alias)
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_4"], f"url.{remote_url}.pushInsteadOf"
+        )
+        self.assertEqual(environment["GIT_CONFIG_VALUE_4"], transport_alias)
+
+    def _assert_execution_controls(self, environment: dict[str, str]) -> None:
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_KEY_1"], "core.fsmonitor")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "false")
+        self.assertEqual(environment["GIT_CONFIG_KEY_2"], "credential.helper")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_2"], "")
 
     def test_token_is_refused_for_non_github_remote(self) -> None:
         repository = self._repository("https://example.com/config.git", "secret-token")
@@ -38,28 +46,22 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "5")
-        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
-        self.assertEqual(environment["GIT_CONFIG_KEY_1"], "credential.helper")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "6")
+        self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_4"],
+            environment["GIT_CONFIG_KEY_5"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_4"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_4"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_5"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_5"])
 
-    def test_no_token_still_disables_hooks_and_credential_helpers(self) -> None:
+    def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
         repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
-        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
-        self.assertEqual(environment["GIT_CONFIG_KEY_1"], "credential.helper")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "5")
+        self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertFalse(
             any(
@@ -89,8 +91,8 @@ class GitAuthTests(unittest.TestCase):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
-        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "5")
+        self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertNotIn("example.invalid", " ".join(environment.values()))
 

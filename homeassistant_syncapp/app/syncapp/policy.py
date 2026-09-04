@@ -19,6 +19,7 @@ BLOCKED_FILE_NAMES = {
     ".HA_VERSION",
     ".gitattributes",
     ".gitignore",
+    ".gitmodules",
     ".uuid",
     "secrets.yaml",
     "secrets.yml",

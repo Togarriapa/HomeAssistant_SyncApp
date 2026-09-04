@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
+    scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
 )
 
@@ -65,6 +66,49 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             lock_git_tls_negotiation_defaults()
             self.assertEqual(os.environ["GIT_SSL_VERSION"], "")
             self.assertEqual(os.environ["GIT_SSL_CIPHER_LIST"], "")
+
+    def test_scrubs_ambient_git_tls_client_credential_selectors(self) -> None:
+        environment = {
+            "GIT_SSL_CERT": "/tmp/attacker-cert.pem",
+            "GIT_SSL_KEY": "/tmp/attacker-key.pem",
+            "GIT_SSL_CERT_PASSWORD_PROTECTED": "1",
+            "GIT_SSL_CERT_TYPE": "P12",
+            "GIT_SSL_KEY_TYPE": "ENG",
+            "GIT_PROXY_SSL_CERT": "/tmp/attacker-proxy-cert.pem",
+            "GIT_PROXY_SSL_KEY": "/tmp/attacker-proxy-key.pem",
+            "GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED": "1",
+            "GIT_SSL_CAINFO": "/tmp/trusted-custom-ca.pem",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        scrub_ambient_git_tls_client_credentials(environment)
+
+        self.assertEqual(environment["GIT_SSL_CAINFO"], "/tmp/trusted-custom-ca.pem")
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+        for key in (
+            "GIT_SSL_CERT",
+            "GIT_SSL_KEY",
+            "GIT_SSL_CERT_PASSWORD_PROTECTED",
+            "GIT_SSL_CERT_TYPE",
+            "GIT_SSL_KEY_TYPE",
+            "GIT_PROXY_SSL_CERT",
+            "GIT_PROXY_SSL_KEY",
+            "GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED",
+        ):
+            self.assertNotIn(key, environment)
+
+    def test_tls_client_credential_scrub_targets_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_SSL_CERT": "/tmp/attacker-cert.pem",
+                "GIT_SSL_KEY": "/tmp/attacker-key.pem",
+            },
+            clear=True,
+        ):
+            scrub_ambient_git_tls_client_credentials()
+            self.assertNotIn("GIT_SSL_CERT", os.environ)
+            self.assertNotIn("GIT_SSL_KEY", os.environ)
 
 
 if __name__ == "__main__":

@@ -40,3 +40,12 @@ def lock_git_literal_pathspecs(
     for key in ("GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
         target.pop(key, None)
     target["GIT_LITERAL_PATHSPECS"] = "1"
+
+
+def scrub_git_allow_protocol(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Remove ambient protocol whitelists that override Git protocol configuration."""
+
+    target = os.environ if environment is None else environment
+    target.pop("GIT_ALLOW_PROTOCOL", None)

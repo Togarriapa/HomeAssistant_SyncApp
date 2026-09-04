@@ -31,6 +31,7 @@ _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_SSL_NO_VERIFY",
     "GIT_ATTR_SOURCE",
     "GIT_ATTR_NOSYSTEM",
+    "GIT_NO_REPLACE_OBJECTS",
     "GIT_PAGER",
     "PAGER",
     "GIT_EDITOR",
@@ -101,6 +102,7 @@ class GitRepository:
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull
         env["GIT_ATTR_NOSYSTEM"] = "1"
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
         env["GIT_ASKPASS"] = os.devnull
         env["SSH_ASKPASS"] = os.devnull
         env["GIT_SSH_COMMAND"] = "ssh"

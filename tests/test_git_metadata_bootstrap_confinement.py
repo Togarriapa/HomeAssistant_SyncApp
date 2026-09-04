@@ -35,7 +35,7 @@ class GitMetadataBootstrapConfinementTests(unittest.TestCase):
         def inspecting_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[object]:
             nonlocal observed
             command = args[0]
-            if isinstance(command, list) and command[:2] == ["git", "init"]:
+            if isinstance(command, list) and command[:2] == ["/usr/bin/git", "init"]:
                 observed = True
                 env = kwargs.get("env")
                 pass_fds = kwargs.get("pass_fds")
@@ -68,7 +68,7 @@ class GitMetadataBootstrapConfinementTests(unittest.TestCase):
             if (
                 not injected
                 and isinstance(command, list)
-                and command[:2] == ["git", "init"]
+                and command[:2] == ["/usr/bin/git", "init"]
             ):
                 injected = True
                 (managed / ".git").rename(detached)

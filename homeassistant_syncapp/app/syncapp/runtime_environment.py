@@ -112,6 +112,15 @@ def lock_git_repository_format(
     target["GIT_DEFAULT_REF_FORMAT"] = "files"
 
 
+def scrub_git_reference_backend(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Prevent ambient state from replacing the managed repository ref backend."""
+
+    target = os.environ if environment is None else environment
+    target.pop("GIT_REFERENCE_BACKEND", None)
+
+
 def _read_custom_ca_bundle(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:

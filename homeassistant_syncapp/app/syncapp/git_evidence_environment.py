@@ -29,3 +29,14 @@ def lock_git_protocol_from_user(
 
     target = os.environ if environment is None else environment
     target["GIT_PROTOCOL_FROM_USER"] = "0"
+
+
+def lock_git_literal_pathspecs(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Require program-supplied Git pathspecs to be interpreted literally."""
+
+    target = os.environ if environment is None else environment
+    for key in ("GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+        target.pop(key, None)
+    target["GIT_LITERAL_PATHSPECS"] = "1"

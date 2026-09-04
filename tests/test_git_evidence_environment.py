@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from syncapp.git_evidence_environment import (
+    lock_git_literal_pathspecs,
     lock_git_no_lazy_fetch,
     lock_git_optional_locks,
     lock_git_protocol_from_user,
@@ -57,6 +58,38 @@ class GitEvidenceEnvironmentTests(unittest.TestCase):
         with patch.dict(os.environ, {"GIT_PROTOCOL_FROM_USER": "1"}, clear=True):
             lock_git_protocol_from_user()
             self.assertEqual(os.environ["GIT_PROTOCOL_FROM_USER"], "0")
+
+    def test_pathspec_policy_replaces_ambient_glob_and_case_controls(self) -> None:
+        environment = {
+            "GIT_LITERAL_PATHSPECS": "0",
+            "GIT_GLOB_PATHSPECS": "1",
+            "GIT_NOGLOB_PATHSPECS": "1",
+            "GIT_ICASE_PATHSPECS": "1",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        lock_git_literal_pathspecs(environment)
+
+        self.assertEqual(environment["GIT_LITERAL_PATHSPECS"], "1")
+        self.assertNotIn("GIT_GLOB_PATHSPECS", environment)
+        self.assertNotIn("GIT_NOGLOB_PATHSPECS", environment)
+        self.assertNotIn("GIT_ICASE_PATHSPECS", environment)
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_literal_pathspec_policy_targets_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_LITERAL_PATHSPECS": "0",
+                "GIT_GLOB_PATHSPECS": "1",
+                "GIT_ICASE_PATHSPECS": "1",
+            },
+            clear=True,
+        ):
+            lock_git_literal_pathspecs()
+            self.assertEqual(os.environ["GIT_LITERAL_PATHSPECS"], "1")
+            self.assertNotIn("GIT_GLOB_PATHSPECS", os.environ)
+            self.assertNotIn("GIT_ICASE_PATHSPECS", os.environ)
 
 
 if __name__ == "__main__":

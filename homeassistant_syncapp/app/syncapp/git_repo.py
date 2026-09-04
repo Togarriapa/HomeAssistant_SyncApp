@@ -176,6 +176,27 @@ class GitRepository:
                 "refusing to send Home Assistant configuration to an unapproved Git target"
             )
 
+    def _configured_remote_head(self) -> str | None:
+        remote_ref = f"refs/heads/{self.branch}"
+        rows = [
+            line.split("\t", 1)
+            for line in self._run(
+                "ls-remote", "--heads", self.remote_url, remote_ref
+            ).stdout.splitlines()
+            if line.strip()
+        ]
+        if not rows:
+            return None
+        if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != remote_ref:
+            raise GitError("authoritative remote branch query returned unexpected refs")
+        commit = rows[0][0]
+        resolved = self._run(
+            "rev-parse", "--verify", f"{commit}^{{commit}}", check=False
+        )
+        if resolved.returncode == 0 and resolved.stdout.strip() != commit:
+            raise GitError("authoritative remote branch query returned an ambiguous commit")
+        return commit
+
     def ensure(self) -> None:
         existing_repository = (self.path / ".git").exists()
         if not existing_repository:
@@ -227,7 +248,26 @@ class GitRepository:
 
     def fetch(self) -> None:
         self._assert_remote_provenance()
-        self._run("fetch", "--prune", "origin")
+        remote_ref = f"refs/heads/{self.branch}"
+        tracking_ref = f"refs/remotes/origin/{self.branch}"
+        advertised = self._configured_remote_head()
+
+        if advertised is None:
+            self._run("update-ref", "-d", tracking_ref, check=False)
+        else:
+            self._run(
+                "fetch",
+                "--no-tags",
+                self.remote_url,
+                f"+{remote_ref}:{tracking_ref}",
+            )
+
+        authoritative = self._configured_remote_head()
+        tracked = self.remote_head()
+        if authoritative != tracked:
+            raise GitError(
+                "remote moved during fetch; refusing to use non-authoritative tracking state"
+            )
 
     def head(self) -> str | None:
         result = self._run("rev-parse", "HEAD", check=False)
@@ -366,14 +406,8 @@ class GitRepository:
         remote_ref = f"refs/heads/{self.branch}"
         self._run("push", self.remote_url, f"{commit}:{remote_ref}")
 
-        published = [
-            line.split("\t", 1)
-            for line in self._run(
-                "ls-remote", "--heads", self.remote_url, remote_ref
-            ).stdout.splitlines()
-            if line.strip()
-        ]
-        if published != [[commit, remote_ref]]:
+        published = self._configured_remote_head()
+        if published != commit:
             raise GitError(
                 "push completed but authoritative remote branch does not identify the expected commit"
             )

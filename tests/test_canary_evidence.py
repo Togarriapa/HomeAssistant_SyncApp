@@ -9,6 +9,23 @@ GOOD_SHA = "a" * 64
 OTHER_SHA = "b" * 64
 
 
+def _args(**overrides):
+    values = {
+        "expected_runtime_sha256": GOOD_SHA,
+        "identity_only": False,
+        "timeout": 120,
+        "backup_archive_max_mib": 1024,
+        "restart": False,
+        "backup": False,
+        "backup_archive_probe": False,
+        "filesystem": False,
+        "filesystem_write_probe": False,
+        "filesystem_path": "configuration.yaml",
+    }
+    values.update(overrides)
+    return mock.Mock(**values)
+
+
 class CanaryEvidenceTests(unittest.TestCase):
     def test_runtime_fingerprint_exact_match_is_returned(self):
         evidence = {
@@ -57,22 +74,34 @@ class CanaryEvidenceTests(unittest.TestCase):
             "canary_evidence.run_canary"
         ) as run_canary, mock.patch(
             "canary_evidence.argparse.ArgumentParser.parse_args",
-            return_value=mock.Mock(
-                expected_runtime_sha256=GOOD_SHA,
-                timeout=120,
-                backup_archive_max_mib=1024,
-                restart=False,
-                backup=False,
-                backup_archive_probe=False,
-                filesystem=False,
-                filesystem_write_probe=False,
-                filesystem_path="configuration.yaml",
-            ),
+            return_value=_args(),
         ):
             with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
                 canary_evidence.main()
         supervisor.assert_not_called()
         run_canary.assert_not_called()
+
+    def test_identity_only_verifies_without_supervisor_or_canary_operations(self):
+        runtime = {
+            "schema": "syncapp-runtime-v1",
+            "algorithm": "sha256",
+            "sha256": GOOD_SHA,
+            "files": 42,
+        }
+        with mock.patch(
+            "canary_evidence.argparse.ArgumentParser.parse_args",
+            return_value=_args(identity_only=True),
+        ), mock.patch(
+            "canary_evidence._verified_runtime_fingerprint", return_value=runtime
+        ), mock.patch("canary_evidence.SupervisorClient") as supervisor, mock.patch(
+            "canary_evidence.run_canary"
+        ) as run_canary, mock.patch("builtins.print") as emit:
+            self.assertEqual(canary_evidence.main(), 0)
+        supervisor.assert_not_called()
+        run_canary.assert_not_called()
+        rendered = json.loads(emit.call_args.args[0])
+        self.assertEqual(rendered["runtime_image"], runtime)
+        self.assertTrue(rendered["identity_verified"])
 
     def test_output_binds_runtime_identity_and_canary_result(self):
         runtime = {
@@ -86,19 +115,8 @@ class CanaryEvidenceTests(unittest.TestCase):
             "core_api": {"message": "API running."},
             "configuration_check": {},
         }
-        args = mock.Mock(
-            expected_runtime_sha256=GOOD_SHA,
-            timeout=120,
-            backup_archive_max_mib=1024,
-            restart=False,
-            backup=False,
-            backup_archive_probe=False,
-            filesystem=False,
-            filesystem_write_probe=False,
-            filesystem_path="configuration.yaml",
-        )
         with mock.patch(
-            "canary_evidence.argparse.ArgumentParser.parse_args", return_value=args
+            "canary_evidence.argparse.ArgumentParser.parse_args", return_value=_args()
         ), mock.patch(
             "canary_evidence._verified_runtime_fingerprint", return_value=runtime
         ), mock.patch("canary_evidence.SupervisorClient", return_value=object()), mock.patch(

@@ -88,11 +88,13 @@ class RepositoryRootIdentityTests(unittest.TestCase):
         real_run = subprocess.run
         observed_cwd: object | None = None
         observed_pass_fds: object | None = None
+        observed_env: object | None = None
 
         def inspecting_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[object]:
-            nonlocal observed_cwd, observed_pass_fds
+            nonlocal observed_cwd, observed_pass_fds, observed_env
             observed_cwd = kwargs.get("cwd")
             observed_pass_fds = kwargs.get("pass_fds")
+            observed_env = kwargs.get("env")
             return real_run(*args, **kwargs)
 
         with mock.patch("syncapp.git_repo.subprocess.run", side_effect=inspecting_run):
@@ -101,7 +103,11 @@ class RepositoryRootIdentityTests(unittest.TestCase):
         self.assertIsInstance(observed_cwd, str)
         self.assertTrue(str(observed_cwd).startswith("/proc/self/fd/"))
         self.assertIsInstance(observed_pass_fds, tuple)
-        self.assertEqual(len(observed_pass_fds), 1)
+        self.assertEqual(len(observed_pass_fds), 2)
+        self.assertIsInstance(observed_env, dict)
+        assert isinstance(observed_env, dict)
+        self.assertTrue(str(observed_env["GIT_DIR"]).startswith("/proc/self/fd/"))
+        self.assertTrue(str(observed_env["GIT_WORK_TREE"]).startswith("/proc/self/fd/"))
 
 
 if __name__ == "__main__":

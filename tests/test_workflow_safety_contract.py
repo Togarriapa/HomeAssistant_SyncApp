@@ -59,6 +59,8 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             ".git/config",
             ".gitattributes",
             "packages/.gitattributes",
+            ".gitignore",
+            "packages/.gitignore",
         )
         for relative in blocked:
             with self.subTest(relative=relative):

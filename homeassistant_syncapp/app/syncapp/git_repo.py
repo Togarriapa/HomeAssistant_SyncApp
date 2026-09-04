@@ -93,6 +93,7 @@ class GitRepository:
         config: list[tuple[str, str]] = [
             ("core.hooksPath", os.devnull),
             ("core.fsmonitor", "false"),
+            ("core.gitProxy", "none"),
             ("credential.helper", ""),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),

@@ -1,0 +1,51 @@
+name: HomeAssistant SyncApp
+version: "0.2.0"
+slug: homeassistant_syncapp
+description: Safely synchronize Home Assistant configuration with GitHub
+url: "https://github.com/Togarriapa/HomeAssistant_SyncApp"
+startup: application
+boot: auto
+init: false
+stage: experimental
+arch:
+  - aarch64
+  - amd64
+hassio_api: true
+hassio_role: manager
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
+  - type: addon_config
+    read_only: true
+options:
+  homeassistant_repository_url: null
+  branch: main
+  poll_interval_seconds: 60
+  dry_run: true
+  remote_apply_enabled: false
+  initial_local_publish_enabled: false
+  initial_remote_apply_enabled: false
+  remote_max_deletions: 25
+  remote_max_deletion_percent: 50
+  verify_timeout_seconds: 120
+  backup_retention_count: 10
+  git_user_name: HomeAssistant SyncApp
+  git_user_email: homeassistant-syncapp@example.invalid
+schema:
+  homeassistant_repository_url: url?
+  repository_url: url?
+  branch: str
+  github_token: password?
+  git_ca_bundle: str?
+  poll_interval_seconds: int(30,86400)
+  dry_run: bool
+  remote_apply_enabled: bool
+  initial_local_publish_enabled: bool
+  initial_remote_apply_enabled: bool
+  remote_max_deletions: int(0,10000)
+  remote_max_deletion_percent: int(0,100)
+  verify_timeout_seconds: int(30,600)
+  backup_retention_count: int(0,100)
+  git_user_name: str
+  git_user_email: email

@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import ast
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+
+import yaml
+
+from .git_repo import GitRepository, GitTreeEntry
+from .policy import BLOCKED_DIR_NAMES, is_allowed_relative
+from .read_evidence import PinnedReadRoot, ReadEvidenceError
+from .staging_fs import StagingFilesystem, StagingFilesystemError
+
+
+MAX_FILE_BYTES = 5 * 1024 * 1024
+MAX_TOTAL_BYTES = 25 * 1024 * 1024
+_ALLOWED_MODES = {"100644", "100755"}
+
+
+class StagingValidationError(RuntimeError):
+    pass
+
+
+class _HomeAssistantLoader(yaml.SafeLoader):
+    """Parse HA YAML syntax while treating custom tags as opaque values."""
+
+
+def _unknown_tag(loader: _HomeAssistantLoader, tag_suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    raise StagingValidationError(f"unsupported YAML node for tag !{tag_suffix}")
+
+
+_HomeAssistantLoader.add_multi_constructor("!", _unknown_tag)
+
+
+@dataclass(frozen=True, slots=True)
+class StagingResult:
+    commit: str
+    file_count: int
+    total_bytes: int
+    file_sha256: tuple[tuple[str, str], ...] = ()
+    integrity_bound: bool = False
+    root_identity: tuple[int, int] | None = None
+
+    @property
+    def file_hashes(self) -> dict[str, str]:
+        return dict(self.file_sha256)
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryValidationResult:
+    file_count: int
+    total_bytes: int
+    file_sha256: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def file_hashes(self) -> dict[str, str]:
+        return dict(self.file_sha256)
+
+
+def _validate_entry(entry: GitTreeEntry) -> None:
+    if entry.object_type != "blob":
+        raise StagingValidationError(
+            f"remote path {entry.path!r} is not a regular blob ({entry.object_type})"
+        )
+    if entry.mode not in _ALLOWED_MODES:
+        raise StagingValidationError(
+            f"remote path {entry.path!r} has unsupported Git mode {entry.mode}"
+        )
+    if not is_allowed_relative(entry.path):
+        raise StagingValidationError(f"remote path is blocked by policy: {entry.path}")
+
+
+def _decode_utf8(raw: bytes, relative: str, kind: str) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StagingValidationError(f"invalid UTF-8 {kind} in {relative}: {exc}") from exc
+
+
+def _validate_file_bytes(relative: str, raw: bytes) -> None:
+    suffix = Path(relative).suffix.lower()
+    if suffix in {".yaml", ".yml"}:
+        text = _decode_utf8(raw, relative, "YAML")
+        try:
+            list(yaml.load_all(text, Loader=_HomeAssistantLoader))
+        except yaml.YAMLError as exc:
+            raise StagingValidationError(f"invalid YAML in {relative}: {exc}") from exc
+    elif suffix == ".json":
+        text = _decode_utf8(raw, relative, "JSON")
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise StagingValidationError(f"invalid JSON in {relative}: {exc}") from exc
+    elif suffix == ".py":
+        text = _decode_utf8(raw, relative, "Python")
+        try:
+            ast.parse(text, filename=relative)
+        except SyntaxError as exc:
+            raise StagingValidationError(f"invalid Python syntax in {relative}: {exc}") from exc
+
+
+def validate_configuration_directory(
+    root: Path,
+    *,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> DirectoryValidationResult:
+    """Validate and hash policy-allowed bytes through descriptor-pinned evidence."""
+    try:
+        with PinnedReadRoot(
+            root,
+            expected_identity=expected_root_identity,
+            label="staging validation",
+        ) as evidence:
+            files = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            total_bytes = 0
+            hashes: list[tuple[str, str]] = []
+            for relative in files:
+                raw = evidence.read_bytes(relative, max_bytes=MAX_FILE_BYTES)
+                size = len(raw)
+                total_bytes += size
+                if total_bytes > MAX_TOTAL_BYTES:
+                    raise StagingValidationError(
+                        f"configuration tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
+                    )
+                _validate_file_bytes(relative, raw)
+                hashes.append((relative, hashlib.sha256(raw).hexdigest()))
+
+            final_files = evidence.regular_files(
+                skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                allow_file=lambda relative: is_allowed_relative(relative),
+            )
+            if final_files != files:
+                raise StagingValidationError(
+                    "configuration path set changed during descriptor-pinned validation"
+                )
+            evidence.assert_path_identity()
+    except ReadEvidenceError as exc:
+        raise StagingValidationError(
+            f"staging filesystem validation failed: {exc}"
+        ) from exc
+
+    return DirectoryValidationResult(
+        file_count=len(files),
+        total_bytes=total_bytes,
+        file_sha256=tuple(hashes),
+    )
+
+
+def assert_staging_integrity(root: Path, staged: StagingResult) -> None:
+    """Re-prove that staging still names the exact tree and bytes that passed validation."""
+    if not staged.integrity_bound:
+        return
+    validated = validate_configuration_directory(
+        root,
+        expected_root_identity=staged.root_identity,
+    )
+    if validated.file_count != staged.file_count:
+        raise StagingValidationError("staging file count changed after validation")
+    if validated.total_bytes != staged.total_bytes:
+        raise StagingValidationError("staging total byte count changed after validation")
+    if validated.file_sha256 != staged.file_sha256:
+        raise StagingValidationError(
+            "staging path/content hash manifest changed after validation"
+        )
+
+
+def _remove_existing_staging_tree(path: Path, *, label: str) -> None:
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise StagingValidationError(f"refusing unsafe existing {label} path")
+    shutil.rmtree(path)
+
+
+def stage_remote_configuration(repository: GitRepository, staging_dir: Path) -> StagingResult:
+    """Materialize a validated remote tree outside the live HA configuration."""
+    remote = repository.remote_head()
+    if remote is None:
+        raise StagingValidationError("remote branch has no commit to stage")
+
+    entries = repository.remote_tree_entries()
+    planned: list[tuple[GitTreeEntry, int]] = []
+    total_bytes = 0
+
+    for entry in entries:
+        _validate_entry(entry)
+        size = repository.blob_size(entry.object_id)
+        if size > MAX_FILE_BYTES:
+            raise StagingValidationError(
+                f"remote path {entry.path!r} exceeds {MAX_FILE_BYTES} byte limit"
+            )
+        total_bytes += size
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise StagingValidationError(
+                f"remote tree exceeds {MAX_TOTAL_BYTES} byte staging limit"
+            )
+        planned.append((entry, size))
+
+    temporary = staging_dir.with_name(staging_dir.name + ".new")
+    _remove_existing_staging_tree(temporary, label="staging temporary")
+    temporary.mkdir(parents=True, exist_ok=False)
+
+    git_hashes: list[tuple[str, str]] = []
+    installed = False
+    root_identity: tuple[int, int] | None = None
+    try:
+        with StagingFilesystem(temporary) as staging_fs:
+            for entry, expected_size in planned:
+                content = repository.read_blob(entry.object_id)
+                if len(content) != expected_size:
+                    raise StagingValidationError(
+                        f"blob size changed while staging {entry.path!r}"
+                    )
+                digest = hashlib.sha256(content).hexdigest()
+                git_hashes.append((entry.path, digest))
+                staging_fs.write_new(entry.path, content, digest)
+
+            staging_fs.assert_path_identity()
+            validation_identity = staging_fs.root_identity()
+            validated = validate_configuration_directory(
+                temporary,
+                expected_root_identity=validation_identity,
+            )
+            staging_fs.assert_path_identity()
+            expected_hashes = tuple(sorted(git_hashes))
+            if validated.file_count != len(planned) or validated.total_bytes != total_bytes:
+                raise StagingValidationError(
+                    "materialized staging tree does not match validated Git tree"
+                )
+            if validated.file_sha256 != expected_hashes:
+                raise StagingValidationError(
+                    "materialized staging bytes do not match the fetched Git blobs"
+                )
+
+            _remove_existing_staging_tree(staging_dir, label="staging")
+            staging_fs.assert_path_identity()
+            temporary.rename(staging_dir)
+            installed = True
+            staging_fs.assert_path_identity(staging_dir)
+            root_identity = staging_fs.root_identity()
+    except StagingFilesystemError as exc:
+        # A confinement failure means a pathname may no longer name the tree that
+        # SyncApp actually opened. Preserve that evidence rather than recursively
+        # deleting an object whose identity is now ambiguous.
+        raise StagingValidationError(f"staging filesystem confinement failed: {exc}") from exc
+    except Exception:
+        if not installed and os.path.lexists(temporary) and not temporary.is_symlink():
+            shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+    return StagingResult(
+        commit=remote,
+        file_count=len(planned),
+        total_bytes=total_bytes,
+        file_sha256=validated.file_sha256,
+        integrity_bound=True,
+        root_identity=root_identity,
+    )

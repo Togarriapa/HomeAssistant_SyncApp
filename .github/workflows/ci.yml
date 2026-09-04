@@ -82,3 +82,54 @@ jobs:
             --build-arg BUILD_ARCH=amd64 \
             --tag homeassistant-syncapp:test \
             homeassistant_syncapp
+
+      - name: Smoke-test bootstrap contract inside built image
+        run: |
+          docker run --rm \
+            --entrypoint /usr/bin/python3 \
+            homeassistant-syncapp:test \
+            -E -s -B -c '
+          import os
+          import sys
+
+          sys.path.insert(0, "/app")
+          import process_bootstrap
+
+          source = {
+              "SUPERVISOR_TOKEN": "smoke-token",
+              "TZ": "Europe/Lisbon",
+              "LANG": "C.UTF-8",
+              "HTTPS_PROXY": "http://untrusted.invalid:8080",
+              "GIT_DIR": "/untrusted/git",
+              "PYTHONPATH": "/untrusted/python",
+              "LD_PRELOAD": "/untrusted/lib.so",
+          }
+          expected = {
+              "PATH": "/usr/bin:/bin",
+              "PYTHONNOUSERSITE": "1",
+              "SUPERVISOR_TOKEN": "smoke-token",
+              "TZ": "Europe/Lisbon",
+              "LANG": "C.UTF-8",
+          }
+          assert process_bootstrap.build_service_environment(source) == expected
+
+          calls = []
+          process_bootstrap.os.execve = lambda executable, arguments, environment: calls.append(
+              (executable, arguments, environment)
+          )
+          os.environ.clear()
+          os.environ.update(source)
+          try:
+              process_bootstrap.main()
+          except RuntimeError as exc:
+              assert str(exc) == "os.execve unexpectedly returned"
+          else:
+              raise AssertionError("bootstrap unexpectedly returned successfully")
+
+          assert len(calls) == 1
+          executable, arguments, environment = calls[0]
+          assert executable == "/usr/bin/python3"
+          assert arguments == ["/usr/bin/python3", "-E", "-s", "-B", "/app/main.py"]
+          assert "smoke-token" not in arguments
+          assert environment == expected
+          '

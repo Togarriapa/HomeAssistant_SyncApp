@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 LOGGER = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
+_TRANSPORT_ALIAS_SUFFIX = "#syncapp-authoritative-transport"
 _GIT_ENVIRONMENT_OVERRIDES = {
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -72,6 +73,9 @@ class GitRepository:
         self._root_identity: tuple[int, int] | None = None
         self._git_metadata_identity: tuple[int, int] | None = None
 
+    def _transport_remote_url(self) -> str:
+        return f"{self.remote_url}{_TRANSPORT_ALIAS_SUFFIX}"
+
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
         for key in list(env):
@@ -82,9 +86,12 @@ class GitRepository:
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull
 
+        transport_alias = self._transport_remote_url()
         config: list[tuple[str, str]] = [
             ("core.hooksPath", os.devnull),
             ("credential.helper", ""),
+            (f"url.{self.remote_url}.insteadOf", transport_alias),
+            (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
         ]
         if self.token:
             parsed = urlparse(self.remote_url)
@@ -331,7 +338,7 @@ class GitRepository:
         rows = [
             line.split("\t", 1)
             for line in self._run(
-                "ls-remote", "--heads", self.remote_url, remote_ref
+                "ls-remote", "--heads", self._transport_remote_url(), remote_ref
             ).stdout.splitlines()
             if line.strip()
         ]
@@ -431,7 +438,7 @@ class GitRepository:
             self._run(
                 "fetch",
                 "--no-tags",
-                self.remote_url,
+                self._transport_remote_url(),
                 f"+{remote_ref}:{tracking_ref}",
             )
 
@@ -577,7 +584,7 @@ class GitRepository:
         if resolved != commit:
             raise GitError("refusing push because expected commit did not resolve exactly")
         remote_ref = f"refs/heads/{self.branch}"
-        self._run("push", self.remote_url, f"{commit}:{remote_ref}")
+        self._run("push", self._transport_remote_url(), f"{commit}:{remote_ref}")
 
         published = self._configured_remote_head()
         if published != commit:

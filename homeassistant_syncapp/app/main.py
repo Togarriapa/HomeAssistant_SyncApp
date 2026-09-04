@@ -13,6 +13,7 @@ from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
+    scrub_git_reference_backend,
     scrub_git_reference_namespace,
     scrub_legacy_git_curl_verbose,
 )
@@ -42,6 +43,7 @@ def main() -> int:
     lock_git_http_concurrency()
     scrub_git_reference_namespace()
     lock_git_repository_format()
+    scrub_git_reference_backend()
     settings = Settings.load("/data/options.json")
     configure_git_ca_trust(settings.git_ca_bundle)
     engine = SyncEngine(settings)

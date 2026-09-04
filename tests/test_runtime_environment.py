@@ -11,6 +11,7 @@ from syncapp.runtime_environment import (
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
+    scrub_git_reference_backend,
     scrub_git_reference_namespace,
     scrub_legacy_git_curl_verbose,
 )
@@ -220,6 +221,26 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         self.assertEqual(object_format, "sha1")
         self.assertNotIn("objectformat = sha256", config.lower())
         self.assertNotIn("refstorage = reftable", config.lower())
+
+    def test_git_reference_backend_is_removed_without_touching_unrelated_state(self) -> None:
+        environment = {
+            "GIT_REFERENCE_BACKEND": "attacker-backend:/tmp/refs",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        scrub_git_reference_backend(environment)
+
+        self.assertNotIn("GIT_REFERENCE_BACKEND", environment)
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_git_reference_backend_scrub_targets_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GIT_REFERENCE_BACKEND": "attacker-backend:/tmp/refs"},
+            clear=True,
+        ):
+            scrub_git_reference_backend()
+            self.assertNotIn("GIT_REFERENCE_BACKEND", os.environ)
 
 
 if __name__ == "__main__":

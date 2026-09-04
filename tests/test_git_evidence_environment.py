@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from syncapp.git_evidence_environment import (
+    lock_git_history_paranoia,
     lock_git_literal_pathspecs,
     lock_git_no_lazy_fetch,
     lock_git_optional_locks,
@@ -112,6 +113,29 @@ class GitEvidenceEnvironmentTests(unittest.TestCase):
             scrub_git_allow_protocol()
             self.assertNotIn("GIT_ALLOW_PROTOCOL", os.environ)
             self.assertEqual(os.environ["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_history_paranoia_overrides_ambient_attempts_to_weaken_checks(self) -> None:
+        environment = {
+            "GIT_REF_PARANOIA": "0",
+            "GIT_COMMIT_GRAPH_PARANOIA": "0",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        lock_git_history_paranoia(environment)
+
+        self.assertEqual(environment["GIT_REF_PARANOIA"], "1")
+        self.assertEqual(environment["GIT_COMMIT_GRAPH_PARANOIA"], "1")
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_history_paranoia_targets_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GIT_REF_PARANOIA": "0", "GIT_COMMIT_GRAPH_PARANOIA": "0"},
+            clear=True,
+        ):
+            lock_git_history_paranoia()
+            self.assertEqual(os.environ["GIT_REF_PARANOIA"], "1")
+            self.assertEqual(os.environ["GIT_COMMIT_GRAPH_PARANOIA"], "1")
 
 
 if __name__ == "__main__":

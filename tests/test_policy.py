@@ -10,7 +10,7 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(is_allowed_relative("packages/lights.yaml"))
         self.assertTrue(is_allowed_relative("custom_components/example/manifest.json"))
 
-    def test_blocks_secrets_and_runtime_state(self):
+    def test_blocks_secrets_runtime_state_and_git_attributes(self):
         for path in (
             "secrets.yaml",
             ".storage/core.config_entries",
@@ -19,6 +19,8 @@ class PolicyTests(unittest.TestCase):
             "home-assistant.log",
             "certs/private.key",
             "deps/cache.bin",
+            ".gitattributes",
+            "packages/.gitattributes",
         ):
             with self.subTest(path=path):
                 self.assertFalse(is_allowed_relative(path))

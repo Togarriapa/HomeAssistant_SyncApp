@@ -57,6 +57,8 @@ class WorkflowSafetyContractTests(unittest.TestCase):
             "runtime/state.lock",
             "cache/value.tmp",
             ".git/config",
+            ".gitattributes",
+            "packages/.gitattributes",
         )
         for relative in blocked:
             with self.subTest(relative=relative):

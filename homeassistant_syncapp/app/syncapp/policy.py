@@ -17,6 +17,7 @@ BLOCKED_DIR_NAMES = {
 
 BLOCKED_FILE_NAMES = {
     ".HA_VERSION",
+    ".gitattributes",
     ".uuid",
     "secrets.yaml",
     "secrets.yml",

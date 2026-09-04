@@ -2,7 +2,10 @@ import os
 import unittest
 from unittest.mock import patch
 
-from syncapp.runtime_environment import scrub_ambient_proxy_environment
+from syncapp.runtime_environment import (
+    lock_git_tls_negotiation_defaults,
+    scrub_ambient_proxy_environment,
+)
 
 
 class RuntimeEnvironmentTests(unittest.TestCase):
@@ -36,6 +39,32 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertNotIn("http_proxy", os.environ)
             self.assertNotIn("HTTPS_PROXY", os.environ)
             self.assertNotIn("NO_PROXY", os.environ)
+
+    def test_tls_negotiation_overrides_are_replaced_with_default_sentinels(self) -> None:
+        environment = {
+            "GIT_SSL_VERSION": "sslv3",
+            "GIT_SSL_CIPHER_LIST": "attacker-cipher-policy",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        lock_git_tls_negotiation_defaults(environment)
+
+        self.assertEqual(environment["GIT_SSL_VERSION"], "")
+        self.assertEqual(environment["GIT_SSL_CIPHER_LIST"], "")
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_tls_negotiation_defaults_are_applied_to_process_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_SSL_VERSION": "tlsv1.0",
+                "GIT_SSL_CIPHER_LIST": "legacy-policy",
+            },
+            clear=True,
+        ):
+            lock_git_tls_negotiation_defaults()
+            self.assertEqual(os.environ["GIT_SSL_VERSION"], "")
+            self.assertEqual(os.environ["GIT_SSL_CIPHER_LIST"], "")
 
 
 if __name__ == "__main__":

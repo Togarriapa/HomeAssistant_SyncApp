@@ -6,6 +6,7 @@ import time
 
 from syncapp.config import Settings
 from syncapp.engine import SyncEngine
+from syncapp.runtime_environment import scrub_ambient_proxy_environment
 
 
 logging.basicConfig(
@@ -25,6 +26,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    scrub_ambient_proxy_environment()
     settings = Settings.load("/data/options.json")
     engine = SyncEngine(settings)
 

@@ -63,6 +63,8 @@ class PublicationRemoteUrlBindingTests(unittest.TestCase):
                 git(expected_remote, "rev-parse", "refs/heads/main"),
                 expected_commit,
             )
+            self.assertEqual(repository.remote_head(), expected_commit)
+            self.assertEqual(repository.relationship(), "equal")
             attacker_ref = subprocess.run(
                 ["git", "rev-parse", "--verify", "refs/heads/main"],
                 cwd=attacker_remote,

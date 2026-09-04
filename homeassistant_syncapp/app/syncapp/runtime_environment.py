@@ -114,10 +114,10 @@ def _write_ca_snapshot(content: bytes, snapshot_path: Path) -> None:
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb", closefd=True) as handle:
+            fd = -1
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        fd = -1
         os.replace(temporary_path, snapshot_path)
     finally:
         if fd >= 0:

@@ -7,6 +7,7 @@ import time
 from syncapp.config import Settings
 from syncapp.engine import SyncEngine
 from syncapp.git_evidence_environment import (
+    lock_git_history_paranoia,
     lock_git_literal_pathspecs,
     lock_git_no_lazy_fetch,
     lock_git_optional_locks,
@@ -56,6 +57,7 @@ def main() -> int:
     lock_git_protocol_from_user()
     lock_git_literal_pathspecs()
     scrub_git_allow_protocol()
+    lock_git_history_paranoia()
     settings = Settings.load("/data/options.json")
     configure_git_ca_trust(settings.git_ca_bundle)
     engine = SyncEngine(settings)

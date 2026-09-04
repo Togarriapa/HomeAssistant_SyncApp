@@ -98,6 +98,7 @@ class GitRepository:
             ("credential.helper", ""),
             ("http.sslVerify", "true"),
             ("http.proxySSLVerify", "true"),
+            ("http.followRedirects", "initial"),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),
         ]

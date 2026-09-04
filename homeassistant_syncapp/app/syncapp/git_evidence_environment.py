@@ -20,3 +20,12 @@ def lock_git_optional_locks(
 
     target = os.environ if environment is None else environment
     target["GIT_OPTIONAL_LOCKS"] = "0"
+
+
+def lock_git_protocol_from_user(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Prevent Git from enabling user-classified protocols from ambient context."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_PROTOCOL_FROM_USER"] = "0"

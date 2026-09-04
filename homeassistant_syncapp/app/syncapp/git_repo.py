@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from urllib.parse import urlparse
 
@@ -197,27 +198,48 @@ class GitRepository:
             raise GitError("authoritative remote branch query returned an ambiguous commit")
         return commit
 
-    def ensure(self) -> None:
-        existing_repository = (self.path / ".git").exists()
-        if not existing_repository:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            if self.path.exists():
-                for child in self.path.iterdir():
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-            result = self._run(
-                "clone",
-                "--no-tags",
-                self.remote_url,
-                str(self.path),
-                cwd=self.path.parent,
-                check=False,
+    def _repository_root_exists(self) -> bool:
+        try:
+            root_stat = os.lstat(self.path)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise GitError(
+                "managed repository path exists but is not a real directory; refusing to follow or replace it"
             )
-            if result.returncode != 0:
-                detail = result.stderr.strip() or result.stdout.strip()
-                raise GitError(f"git clone failed: {detail}")
+        return True
+
+    def _has_repository_metadata(self) -> bool:
+        metadata = self.path / ".git"
+        try:
+            metadata_stat = os.lstat(metadata)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISDIR(metadata_stat.st_mode):
+            raise GitError(
+                "managed repository .git metadata is not a real directory; refusing unsafe repository state"
+            )
+        return True
+
+    def _initialize_repository(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._repository_root_exists():
+            if any(self.path.iterdir()):
+                raise GitError(
+                    "managed repository path contains unmanaged state; refusing destructive bootstrap cleanup"
+                )
+        else:
+            self.path.mkdir(mode=0o700)
+
+        self._run("init")
+        self._run("symbolic-ref", "HEAD", f"refs/heads/{self.branch}")
+        self._run("remote", "add", "origin", self.remote_url)
+
+    def ensure(self) -> None:
+        root_exists = self._repository_root_exists()
+        existing_repository = root_exists and self._has_repository_metadata()
+        if not existing_repository:
+            self._initialize_repository()
         else:
             self._assert_remote_provenance()
             current = self._run("branch", "--show-current").stdout.strip()
@@ -238,8 +260,9 @@ class GitRepository:
             "show-ref", "--verify", "--quiet", remote_ref, check=False
         ).returncode == 0
         current = self._run("branch", "--show-current").stdout.strip()
+        local_head = self.head()
 
-        if current == self.branch:
+        if current == self.branch and (local_head is not None or not has_remote_branch):
             return
         if has_remote_branch:
             self._run("checkout", "-B", self.branch, f"origin/{self.branch}")

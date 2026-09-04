@@ -666,11 +666,11 @@ class GitRepository:
         return paths
 
     def discard_worktree_changes(self) -> None:
-        """Drop rejected/dry-run candidates only from the isolated /data repository."""
+        """Discard candidate index state without attribute-driven worktree checkout."""
         if self.head() is not None:
-            self._run("reset", "--hard", "HEAD")
+            self._run("reset", "--mixed", "HEAD")
         else:
-            self._run("rm", "-r", "--cached", "--ignore-unmatch", ".", check=False)
+            self._run("read-tree", "--empty")
         self._run("clean", "-fdx")
 
     def commit(self, message: str) -> str:

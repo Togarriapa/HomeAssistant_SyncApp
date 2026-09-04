@@ -84,6 +84,15 @@ def scrub_legacy_git_curl_verbose(
     target.pop("GIT_CURL_VERBOSE", None)
 
 
+def lock_git_http_concurrency(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Keep Git HTTP parallelism at Git's documented default of five requests."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_HTTP_MAX_REQUESTS"] = "5"
+
+
 def _read_custom_ca_bundle(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:

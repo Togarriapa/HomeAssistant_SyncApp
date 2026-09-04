@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from syncapp.runtime_environment import (
+    lock_git_http_concurrency,
     lock_git_tls_negotiation_defaults,
     scrub_ambient_git_tls_client_credentials,
     scrub_ambient_proxy_environment,
@@ -126,6 +127,22 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         with patch.dict(os.environ, {"GIT_CURL_VERBOSE": "1"}, clear=True):
             scrub_legacy_git_curl_verbose()
             self.assertNotIn("GIT_CURL_VERBOSE", os.environ)
+
+    def test_http_concurrency_is_capped_even_when_ambient_value_is_higher(self) -> None:
+        environment = {
+            "GIT_HTTP_MAX_REQUESTS": "5000",
+            "SYNCAPP_SENTINEL": "preserve-me",
+        }
+
+        lock_git_http_concurrency(environment)
+
+        self.assertEqual(environment["GIT_HTTP_MAX_REQUESTS"], "5")
+        self.assertEqual(environment["SYNCAPP_SENTINEL"], "preserve-me")
+
+    def test_http_concurrency_cap_targets_process_environment(self) -> None:
+        with patch.dict(os.environ, {"GIT_HTTP_MAX_REQUESTS": "5000"}, clear=True):
+            lock_git_http_concurrency()
+            self.assertEqual(os.environ["GIT_HTTP_MAX_REQUESTS"], "5")
 
 
 if __name__ == "__main__":

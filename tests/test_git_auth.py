@@ -23,12 +23,12 @@ class GitAuthTests(unittest.TestCase):
         self, environment: dict[str, str], remote_url: str
     ) -> None:
         transport_alias = f"{remote_url}#syncapp-authoritative-transport"
-        self.assertEqual(environment["GIT_CONFIG_KEY_8"], f"url.{remote_url}.insteadOf")
-        self.assertEqual(environment["GIT_CONFIG_VALUE_8"], transport_alias)
+        self.assertEqual(environment["GIT_CONFIG_KEY_10"], f"url.{remote_url}.insteadOf")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_10"], transport_alias)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_9"], f"url.{remote_url}.pushInsteadOf"
+            environment["GIT_CONFIG_KEY_11"], f"url.{remote_url}.pushInsteadOf"
         )
-        self.assertEqual(environment["GIT_CONFIG_VALUE_9"], transport_alias)
+        self.assertEqual(environment["GIT_CONFIG_VALUE_11"], transport_alias)
 
     def _assert_execution_controls(self, environment: dict[str, str]) -> None:
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
@@ -47,6 +47,10 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_VALUE_6"], "initial")
         self.assertEqual(environment["GIT_CONFIG_KEY_7"], "http.extraHeader")
         self.assertEqual(environment["GIT_CONFIG_VALUE_7"], "")
+        self.assertEqual(environment["GIT_CONFIG_KEY_8"], "http.cookieFile")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_8"], "")
+        self.assertEqual(environment["GIT_CONFIG_KEY_9"], "http.saveCookies")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_9"], "false")
         self.assertEqual(environment["GIT_ASKPASS"], os.devnull)
         self.assertEqual(environment["SSH_ASKPASS"], os.devnull)
         self.assertEqual(environment["GIT_SSH_COMMAND"], "ssh")
@@ -60,21 +64,21 @@ class GitAuthTests(unittest.TestCase):
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "11")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "13")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_10"],
+            environment["GIT_CONFIG_KEY_12"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_10"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_10"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_12"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_12"])
 
     def test_no_token_still_disables_repository_execution_helpers(self) -> None:
         remote_url = "/tmp/local.git"
         repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "10")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "12")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertFalse(
@@ -115,7 +119,7 @@ class GitAuthTests(unittest.TestCase):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "10")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "12")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertNotIn("attacker", " ".join(environment.values()))
@@ -231,6 +235,44 @@ class GitAuthTests(unittest.TestCase):
             self.assertIn(injected, values)
             self.assertTrue(values)
             self.assertEqual(values[-1], "")
+
+    def test_repository_local_http_cookie_persistence_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repository"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "http.cookieFile",
+                    "/tmp/syncapp-attacker-cookies",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "http.saveCookies", "true"],
+                check=True,
+            )
+            repository = GitRepository(
+                path=root,
+                remote_url="https://github.com/example/config.git",
+                branch="main",
+                token=None,
+                user_name="SyncApp Test",
+                user_email="syncapp-test@example.invalid",
+            )
+
+            cookie_file = repository._run("config", "--get", "http.cookieFile")
+            save_cookies = repository._run(
+                "config", "--get", "http.saveCookies"
+            ).stdout.strip()
+
+            self.assertEqual(cookie_file.returncode, 0)
+            self.assertEqual(cookie_file.stdout.strip(), "")
+            self.assertEqual(save_cookies, "false")
 
 
 if __name__ == "__main__":

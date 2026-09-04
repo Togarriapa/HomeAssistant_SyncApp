@@ -25,6 +25,8 @@ class PolicyTests(unittest.TestCase):
             "packages/.gitignore",
             ".gitmodules",
             "packages/.gitmodules",
+            ".lfsconfig",
+            "packages/.lfsconfig",
         ):
             with self.subTest(path=path):
                 self.assertFalse(is_allowed_relative(path))

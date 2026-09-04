@@ -10,6 +10,9 @@ import stat
 import subprocess
 from urllib.parse import urlparse
 
+from .policy import BLOCKED_DIR_NAMES, is_allowed_relative
+from .read_evidence import PinnedReadRoot, ReadEvidenceError
+
 
 LOGGER = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "www.github.com"}
@@ -302,7 +305,12 @@ class GitRepository:
             raise GitError(f"git {' '.join(args)} failed: {detail}")
         return process
 
-    def _run_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    def _run_bytes(
+        self,
+        *args: str,
+        check: bool = True,
+        input_data: bytes | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
         root_fd, root_identity = self._open_pinned_repository_root()
         git_fd: int | None = None
         git_identity: tuple[int, int] | None = None
@@ -321,6 +329,7 @@ class GitRepository:
                 ["git", *args],
                 cwd=f"/proc/self/fd/{root_fd}",
                 env=env,
+                input=input_data,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
@@ -587,7 +596,58 @@ class GitRepository:
         return self._run_bytes("cat-file", "blob", object_id).stdout
 
     def add_all(self) -> None:
-        self._run("add", "-A", "-f")
+        """Construct the exact managed index without consulting Git attributes or filters."""
+        head = self.head()
+        baseline_entries = self.tree_entries(head) if head is not None else []
+        baseline_modes: dict[str, str] = {}
+        for entry in baseline_entries:
+            if (
+                not is_allowed_relative(entry.path)
+                or entry.object_type != "blob"
+                or entry.mode not in {"100644", "100755"}
+            ):
+                raise GitError(
+                    f"managed Git baseline contains an unsafe entry: {entry.path}"
+                )
+            baseline_modes[entry.path] = entry.mode
+
+        try:
+            with PinnedReadRoot(self.path, label="managed Git index source") as evidence:
+                candidates = evidence.regular_files(
+                    skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                    allow_file=lambda relative: is_allowed_relative(relative),
+                )
+                self._run("read-tree", "--empty")
+                for relative in candidates:
+                    content = evidence.read_bytes(relative)
+                    object_id = self._run_bytes(
+                        "hash-object",
+                        "-w",
+                        "--no-filters",
+                        "--stdin",
+                        input_data=content,
+                    ).stdout.decode("ascii").strip()
+                    if not object_id:
+                        raise GitError(f"git hash-object returned no object id for {relative}")
+                    mode = baseline_modes.get(relative, "100644")
+                    self._run(
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        mode,
+                        object_id,
+                        relative,
+                    )
+
+                final_candidates = evidence.regular_files(
+                    skip_dir_names=frozenset(BLOCKED_DIR_NAMES),
+                    allow_file=lambda relative: is_allowed_relative(relative),
+                )
+                if final_candidates != candidates:
+                    raise GitError("managed Git worktree changed during index construction")
+                evidence.assert_path_identity()
+        except ReadEvidenceError as exc:
+            raise GitError(f"managed Git index source could not be read safely: {exc}") from exc
 
     def staged_paths(self) -> list[str]:
         result = self._run("diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")

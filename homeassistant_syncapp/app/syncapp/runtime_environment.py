@@ -75,6 +75,15 @@ def scrub_ambient_git_tls_client_credentials(
         target.pop(key, None)
 
 
+def scrub_legacy_git_curl_verbose(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Prevent inherited libcurl verbose diagnostics from reaching Git transport."""
+
+    target = os.environ if environment is None else environment
+    target.pop("GIT_CURL_VERBOSE", None)
+
+
 def _read_custom_ca_bundle(path: Path) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:

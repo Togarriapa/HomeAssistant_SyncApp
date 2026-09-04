@@ -378,6 +378,9 @@ class GitRepository:
                 "push completed but authoritative remote branch does not identify the expected commit"
             )
 
+        tracking_ref = f"refs/remotes/origin/{self.branch}"
+        self._run("update-ref", tracking_ref, commit)
+
     def adopt_remote(self, expected_commit: str) -> None:
         remote = self.remote_head()
         if remote != expected_commit:

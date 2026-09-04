@@ -89,6 +89,7 @@ class GitRepository:
         transport_alias = self._transport_remote_url()
         config: list[tuple[str, str]] = [
             ("core.hooksPath", os.devnull),
+            ("core.fsmonitor", "false"),
             ("credential.helper", ""),
             (f"url.{self.remote_url}.insteadOf", transport_alias),
             (f"url.{self.remote_url}.pushInsteadOf", transport_alias),

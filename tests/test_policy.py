@@ -23,6 +23,8 @@ class PolicyTests(unittest.TestCase):
             "packages/.gitattributes",
             ".gitignore",
             "packages/.gitignore",
+            ".gitmodules",
+            "packages/.gitmodules",
         ):
             with self.subTest(path=path):
                 self.assertFalse(is_allowed_relative(path))

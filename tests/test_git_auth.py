@@ -101,6 +101,13 @@ class GitAuthTests(unittest.TestCase):
             "GIT_SSH_COMMAND": "/tmp/attacker-ssh",
             "GIT_PROXY_COMMAND": "/tmp/attacker-proxy",
             "GIT_SSL_NO_VERIFY": "1",
+            "GIT_TRACE": "1",
+            "GIT_TRACE_CURL": "/tmp/attacker-curl-trace",
+            "GIT_TRACE_CURL_NO_DATA": "0",
+            "GIT_TRACE_REDACT": "0",
+            "GIT_TRACE2": "/tmp/attacker-trace2",
+            "GIT_TRACE2_EVENT": "/tmp/attacker-trace2-event",
+            "GIT_TRACE2_PERF": "/tmp/attacker-trace2-perf",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "url.https://example.invalid/.insteadOf",
             "GIT_CONFIG_VALUE_0": "https://github.com/",
@@ -115,6 +122,13 @@ class GitAuthTests(unittest.TestCase):
             "GIT_TEMPLATE_DIR",
             "GIT_PROXY_COMMAND",
             "GIT_SSL_NO_VERIFY",
+            "GIT_TRACE",
+            "GIT_TRACE_CURL",
+            "GIT_TRACE_CURL_NO_DATA",
+            "GIT_TRACE_REDACT",
+            "GIT_TRACE2",
+            "GIT_TRACE2_EVENT",
+            "GIT_TRACE2_PERF",
         ):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)

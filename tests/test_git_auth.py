@@ -18,34 +18,49 @@ class GitAuthTests(unittest.TestCase):
             user_email="syncapp-test@example.invalid",
         )
 
+    def _assert_transport_rewrite_lock(
+        self, environment: dict[str, str], remote_url: str
+    ) -> None:
+        transport_alias = f"{remote_url}#syncapp-authoritative-transport"
+        self.assertEqual(environment["GIT_CONFIG_KEY_2"], f"url.{remote_url}.insteadOf")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_2"], transport_alias)
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_3"], f"url.{remote_url}.pushInsteadOf"
+        )
+        self.assertEqual(environment["GIT_CONFIG_VALUE_3"], transport_alias)
+
     def test_token_is_refused_for_non_github_remote(self) -> None:
         repository = self._repository("https://example.com/config.git", "secret-token")
         with self.assertRaisesRegex(GitError, "non-GitHub"):
             repository._environment()
 
     def test_github_remote_receives_host_scoped_authorization_header(self) -> None:
-        repository = self._repository("https://github.com/example/config.git", "secret-token")
+        remote_url = "https://github.com/example/config.git"
+        repository = self._repository(remote_url, "secret-token")
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "5")
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
         self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_KEY_1"], "credential.helper")
         self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "")
+        self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertEqual(
-            environment["GIT_CONFIG_KEY_2"],
+            environment["GIT_CONFIG_KEY_4"],
             "http.https://github.com/.extraHeader",
         )
-        self.assertTrue(environment["GIT_CONFIG_VALUE_2"].startswith("Authorization: Basic "))
-        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_2"])
+        self.assertTrue(environment["GIT_CONFIG_VALUE_4"].startswith("Authorization: Basic "))
+        self.assertNotIn("secret-token", environment["GIT_CONFIG_VALUE_4"])
 
     def test_no_token_still_disables_hooks_and_credential_helpers(self) -> None:
-        repository = self._repository("/tmp/local.git", None)
+        remote_url = "/tmp/local.git"
+        repository = self._repository(remote_url, None)
         environment = repository._environment()
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
         self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_KEY_1"], "credential.helper")
         self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "")
+        self._assert_transport_rewrite_lock(environment, remote_url)
         self.assertFalse(
             any(
                 value.startswith("Authorization: Basic ")
@@ -55,7 +70,8 @@ class GitAuthTests(unittest.TestCase):
         )
 
     def test_ambient_git_overrides_are_scrubbed(self) -> None:
-        repository = self._repository("https://github.com/example/config.git", None)
+        remote_url = "https://github.com/example/config.git"
+        repository = self._repository(remote_url, None)
         poisoned = {
             "GIT_DIR": "/tmp/attacker-dir",
             "GIT_WORK_TREE": "/tmp/attacker-worktree",
@@ -73,9 +89,10 @@ class GitAuthTests(unittest.TestCase):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(environment["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
         self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
-        self.assertNotIn("insteadOf", " ".join(environment.values()))
+        self._assert_transport_rewrite_lock(environment, remote_url)
+        self.assertNotIn("example.invalid", " ".join(environment.values()))
 
 
 if __name__ == "__main__":

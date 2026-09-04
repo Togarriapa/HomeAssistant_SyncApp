@@ -9,6 +9,7 @@ RUN apk add --no-cache \
     git \
     py3-yaml \
     python3 \
+    && test -x /usr/bin/env \
     && test -x /usr/bin/git \
     && test -x /usr/bin/python3 \
     && test "$(/usr/bin/git --exec-path)" = "/usr/libexec/git-core" \

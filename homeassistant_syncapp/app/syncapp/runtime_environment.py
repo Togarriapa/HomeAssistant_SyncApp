@@ -31,3 +31,13 @@ def scrub_ambient_proxy_environment(
     target = os.environ if environment is None else environment
     for key in _AMBIENT_PROXY_KEYS:
         target.pop(key, None)
+
+
+def lock_git_tls_negotiation_defaults(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Force Git/libcurl to use its compiled default TLS version and cipher policy."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_SSL_VERSION"] = ""
+    target["GIT_SSL_CIPHER_LIST"] = ""

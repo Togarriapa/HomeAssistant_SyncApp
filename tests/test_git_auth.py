@@ -36,6 +36,9 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "false")
         self.assertEqual(environment["GIT_CONFIG_KEY_2"], "credential.helper")
         self.assertEqual(environment["GIT_CONFIG_VALUE_2"], "")
+        self.assertEqual(environment["GIT_ASKPASS"], os.devnull)
+        self.assertEqual(environment["SSH_ASKPASS"], os.devnull)
+        self.assertEqual(environment["GIT_SSH_COMMAND"], "ssh")
 
     def test_token_is_refused_for_non_github_remote(self) -> None:
         repository = self._repository("https://example.com/config.git", "secret-token")
@@ -71,7 +74,7 @@ class GitAuthTests(unittest.TestCase):
             )
         )
 
-    def test_ambient_git_overrides_are_scrubbed(self) -> None:
+    def test_ambient_git_overrides_are_scrubbed_before_safe_helpers_are_installed(self) -> None:
         remote_url = "https://github.com/example/config.git"
         repository = self._repository(remote_url, None)
         poisoned = {
@@ -79,6 +82,8 @@ class GitAuthTests(unittest.TestCase):
             "GIT_WORK_TREE": "/tmp/attacker-worktree",
             "GIT_TEMPLATE_DIR": "/tmp/attacker-template",
             "GIT_ASKPASS": "/tmp/attacker-askpass",
+            "SSH_ASKPASS": "/tmp/attacker-ssh-askpass",
+            "GIT_SSH_COMMAND": "/tmp/attacker-ssh",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "url.https://example.invalid/.insteadOf",
             "GIT_CONFIG_VALUE_0": "https://github.com/",
@@ -87,13 +92,14 @@ class GitAuthTests(unittest.TestCase):
         with patch.dict(os.environ, poisoned, clear=False):
             environment = repository._environment()
 
-        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_TEMPLATE_DIR", "GIT_ASKPASS"):
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_TEMPLATE_DIR"):
             self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_CONFIG_COUNT"], "5")
         self._assert_execution_controls(environment)
         self._assert_transport_rewrite_lock(environment, remote_url)
+        self.assertNotIn("attacker", " ".join(environment.values()))
         self.assertNotIn("example.invalid", " ".join(environment.values()))
 
 

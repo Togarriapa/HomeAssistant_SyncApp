@@ -85,6 +85,9 @@ class GitRepository:
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_ASKPASS"] = os.devnull
+        env["SSH_ASKPASS"] = os.devnull
+        env["GIT_SSH_COMMAND"] = "ssh"
 
         transport_alias = self._transport_remote_url()
         config: list[tuple[str, str]] = [

@@ -7,11 +7,4 @@ export PYTHONNOUSERSITE="1"
 unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_PROFILE_OUTPUT
 
 bashio::log.info "Starting HomeAssistant SyncApp"
-exec /usr/bin/env -i \
-    PATH="/usr/bin:/bin" \
-    PYTHONNOUSERSITE="1" \
-    SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN-}" \
-    TZ="${TZ-}" \
-    LANG="${LANG-}" \
-    LC_ALL="${LC_ALL-}" \
-    /usr/bin/python3 -E -s -B /app/main.py
+exec /usr/bin/python3 -E -s -B /app/process_bootstrap.py

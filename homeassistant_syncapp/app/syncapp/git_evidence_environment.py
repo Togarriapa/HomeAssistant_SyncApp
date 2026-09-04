@@ -11,3 +11,12 @@ def lock_git_no_lazy_fetch(
 
     target = os.environ if environment is None else environment
     target["GIT_NO_LAZY_FETCH"] = "1"
+
+
+def lock_git_optional_locks(
+    environment: MutableMapping[str, str] | None = None,
+) -> None:
+    """Disable optional Git operations that may mutate repository bookkeeping."""
+
+    target = os.environ if environment is None else environment
+    target["GIT_OPTIONAL_LOCKS"] = "0"

@@ -69,6 +69,7 @@ class GitRepository:
         self.token = token
         self.user_name = user_name
         self.user_email = user_email
+        self._root_identity: tuple[int, int] | None = None
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -104,35 +105,96 @@ class GitRepository:
             env[f"GIT_CONFIG_VALUE_{index}"] = value
         return env
 
+    @staticmethod
+    def _directory_identity(value: os.stat_result) -> tuple[int, int]:
+        return value.st_dev, value.st_ino
+
+    def _assert_repository_root_identity(self, expected: tuple[int, int]) -> None:
+        try:
+            current = os.lstat(self.path)
+        except FileNotFoundError as exc:
+            raise GitError("managed repository root disappeared during Git operation") from exc
+        if not stat.S_ISDIR(current.st_mode) or self._directory_identity(current) != expected:
+            raise GitError("managed repository root was replaced during Git operation")
+
+    def _open_pinned_repository_root(self) -> tuple[int, tuple[int, int]]:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            root_fd = os.open(self.path, flags)
+        except OSError as exc:
+            raise GitError("managed repository root cannot be opened safely") from exc
+
+        try:
+            opened = os.fstat(root_fd)
+            if not stat.S_ISDIR(opened.st_mode):
+                raise GitError("managed repository root is not a directory")
+            identity = self._directory_identity(opened)
+            if self._root_identity is None:
+                self._root_identity = identity
+            elif identity != self._root_identity:
+                raise GitError("managed repository root identity changed between Git operations")
+            self._assert_repository_root_identity(identity)
+            return root_fd, identity
+        except Exception:
+            os.close(root_fd)
+            raise
+
     def _run(
         self,
         *args: str,
         cwd: Path | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        process = subprocess.run(
-            ["git", *args],
-            cwd=cwd or self.path,
-            env=self._environment(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        root_fd: int | None = None
+        root_identity: tuple[int, int] | None = None
+        run_cwd: str | Path
+        pass_fds: tuple[int, ...]
+        if cwd is None:
+            root_fd, root_identity = self._open_pinned_repository_root()
+            run_cwd = f"/proc/self/fd/{root_fd}"
+            pass_fds = (root_fd,)
+        else:
+            run_cwd = cwd
+            pass_fds = ()
+
+        try:
+            process = subprocess.run(
+                ["git", *args],
+                cwd=run_cwd,
+                env=self._environment(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                pass_fds=pass_fds,
+            )
+            if root_identity is not None:
+                self._assert_repository_root_identity(root_identity)
+        finally:
+            if root_fd is not None:
+                os.close(root_fd)
+
         if check and process.returncode != 0:
             detail = process.stderr.strip() or process.stdout.strip()
             raise GitError(f"git {' '.join(args)} failed: {detail}")
         return process
 
     def _run_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-        process = subprocess.run(
-            ["git", *args],
-            cwd=self.path,
-            env=self._environment(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        root_fd, root_identity = self._open_pinned_repository_root()
+        try:
+            process = subprocess.run(
+                ["git", *args],
+                cwd=f"/proc/self/fd/{root_fd}",
+                env=self._environment(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                pass_fds=(root_fd,),
+            )
+            self._assert_repository_root_identity(root_identity)
+        finally:
+            os.close(root_fd)
+
         if check and process.returncode != 0:
             detail = (process.stderr or process.stdout).decode("utf-8", errors="replace").strip()
             raise GitError(f"git {' '.join(args)} failed: {detail}")

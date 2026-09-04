@@ -83,6 +83,13 @@ jobs:
             --tag homeassistant-syncapp:test \
             homeassistant_syncapp
 
+      - name: Record built runtime fingerprint
+        run: |
+          docker run --rm \
+            --entrypoint /usr/bin/python3 \
+            homeassistant-syncapp:test \
+            -E -s -B /app/runtime_fingerprint.py
+
       - name: Smoke-test real image entrypoint boundary
         run: sh tests/run_image_entrypoint_smoke.sh homeassistant-syncapp:test
 
